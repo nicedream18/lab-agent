@@ -1,0 +1,118 @@
+# ---------------------------------------------------------------
+# Git 忽略规则
+#
+# 设计原则：**只提交"人写的东西"，不提交"机器生成的东西"**。
+#
+# 判断标准（三条，满足任意一条就该忽略）：
+#   1. 能靠命令重新生成 → 不该进仓库（.venv、node_modules、dist、__pycache__）
+#   2. 含密钥 / 环境相关 → 绝不能进仓库（.env）
+#   3. 运行时产生的用户数据 → 不该进仓库（uploads、chroma 向量库）
+#
+# 为什么这件事很重要（不是洁癖）：
+#   - backend/.venv 是 1.5G、frontend/node_modules 是 180M。
+#     一旦 commit 进去，git 历史会永久膨胀，之后每次 clone 都要拖这几个 G，
+#     而且**删掉文件也不会让仓库变小** —— 历史里的 blob 会一直在。
+#     想彻底清掉得用 git filter-repo 重写历史，非常麻烦。
+#     所以必须在**第一次 commit 之前**就 ignore 掉。
+#   - .env 里有数据库密码和 JWT 密钥。推上 GitHub 就等于公开泄露，
+#     而且爬虫扫 .env 是分钟级的（有专门的机器人）。配套的
+#     deploy/env.production.example 就是"能提交的模板"。
+# ---------------------------------------------------------------
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# 虚拟环境：各写法都覆盖一遍，因为不同工具建的目录名不一样
+.venv/
+venv/
+ENV/
+env/
+.python-version
+
+# 测试与覆盖率产物
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+
+# ---------- Node / 前端 ----------
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+
+# ---------- 密钥与环境变量（🔴 绝不能进仓库）----------
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+!**/env.production.example
+
+# ---------- 运行时数据 ----------
+# 向量库：由 data/kb/*.md 重新 embedding 生成，属于"可再生成"，
+# 而且每次重建向量都可能不一样（浮点），提交上去只会制造无意义的 diff。
+backend/data/chroma/
+
+# 上传的文件：用户的运行时数据，不是代码
+backend/uploads/
+backend/data/uploads/
+
+# 日志
+*.log
+logs/
+
+# ---------- macOS / 编辑器 ----------
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+.AppleDouble
+.LSOverride
+
+# VS Code：保留共享配置，忽略个人配置
+.vscode/*
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/extensions.json
+
+.idea/
+*.swp
+*.swo
+*~
+
+# ---------- 注意（不要 ignore 的）----------
+# backend/data/kb/   ← 知识库源文件，是人写的内容，**必须提交**
+# deploy/env.production.example ← 环境变量模板，**必须提交**

@@ -1,0 +1,560 @@
+:root {
+    --el-color-primary: #17664d;
+    --el-color-primary-light-3: #4f8b75;
+    --el-color-primary-light-5: #83ad9d;
+    --el-color-primary-light-7: #b4cec3;
+    --el-color-primary-light-8: #d0e0d8;
+    --el-color-primary-light-9: #edf4f0;
+    --el-color-primary-dark-2: #10513c;
+    --el-color-success: #39896a;
+    --el-color-warning: #c8872d;
+    --el-color-danger: #c35752;
+    --el-color-info: #75847c;
+    --el-border-radius-base: 8px;
+    --el-border-radius-small: 6px;
+    --el-border-color: #dfe8e2;
+    --el-border-color-light: #e9efeb;
+    --el-fill-color-light: #f4f8f5;
+    --el-bg-color-page: #f1f5f2;
+    --el-text-color-primary: #1d2e26;
+    --el-text-color-regular: #4f5e56;
+    --app-canvas: #f1f5f2;
+    --app-surface: #ffffff;
+    --app-ink: #1d2e26;
+    --app-muted: #718078;
+    --app-green: #17664d;
+    --app-green-deep: #123a2e;
+    --app-lime: #c9ed72;
+    --app-line: #dfe8e2;
+    --app-shadow: 0 8px 24px rgba(26, 54, 39, 0.06);
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+    width: 100%;
+    min-height: 100%;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    min-width: 320px;
+    font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+    color: var(--app-ink);
+    background-color: var(--app-canvas);
+    -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+textarea {
+    font: inherit;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p {
+    margin: 0;
+}
+
+ul,
+ol {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+a {
+    color: inherit;
+    text-decoration: none;
+}
+
+img {
+    max-width: 100%;
+}
+
+:focus-visible {
+    outline: 3px solid rgba(201, 237, 114, 0.85);
+    outline-offset: 2px;
+}
+
+.el-card {
+    --el-card-border-color: var(--app-line);
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(26, 54, 39, 0.035);
+    transition:
+        border-color 160ms ease,
+        box-shadow 160ms ease,
+        transform 160ms ease;
+}
+
+.el-card__header {
+    padding: 16px 20px;
+    border-bottom-color: var(--app-line);
+}
+
+.el-card__body {
+    padding: 20px;
+}
+
+.el-button {
+    min-height: 36px;
+    border-radius: 8px;
+    font-weight: 600;
+    transition:
+        background-color 160ms ease,
+        border-color 160ms ease,
+        color 160ms ease,
+        transform 160ms ease;
+}
+
+.el-button--primary {
+    --el-button-bg-color: var(--app-green);
+    --el-button-border-color: var(--app-green);
+    --el-button-hover-bg-color: #23785d;
+    --el-button-hover-border-color: #23785d;
+    --el-button-active-bg-color: var(--app-green-deep);
+    --el-button-active-border-color: var(--app-green-deep);
+}
+
+.el-input__wrapper,
+.el-select__wrapper,
+.el-textarea__inner {
+    border-radius: 8px;
+}
+
+.el-input__wrapper,
+.el-select__wrapper {
+    min-height: 40px;
+    box-shadow: 0 0 0 1px var(--app-line) inset;
+}
+
+.el-input__wrapper:hover,
+.el-select__wrapper:hover {
+    box-shadow: 0 0 0 1px #b7c9bd inset;
+}
+
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focused,
+.el-textarea__inner:focus {
+    box-shadow: 0 0 0 2px rgba(23, 102, 77, 0.18) inset;
+}
+
+.el-table {
+    --el-table-border-color: #e6ede8;
+    --el-table-header-bg-color: #f3f7f4;
+    --el-table-row-hover-bg-color: #f5f9f6;
+    color: var(--app-ink);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.el-table .el-table__header th.el-table__cell {
+    color: #52635a;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.el-table .el-table__cell {
+    padding: 12px 0;
+}
+
+.el-pagination {
+    color: var(--app-muted);
+}
+
+.el-dialog {
+    max-width: calc(100vw - 24px);
+    border-radius: 12px;
+    box-shadow: 0 20px 60px rgba(18, 58, 46, 0.18);
+}
+
+.el-dialog__header {
+    padding: 20px 22px 14px;
+}
+
+.el-dialog__body {
+    padding: 8px 22px 20px;
+}
+
+.el-dialog__footer {
+    padding: 14px 22px 20px;
+    border-top: 1px solid var(--app-line);
+}
+
+.el-form-item__label {
+    color: #53645b;
+    font-weight: 600;
+}
+
+.page-heading {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 18px;
+    margin: 0 0 20px;
+}
+
+.page-kicker {
+    margin-bottom: 7px;
+    color: var(--app-green);
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+}
+
+.page-title {
+    color: var(--app-ink);
+    font-size: 24px;
+    font-weight: 750;
+    line-height: 1.25;
+}
+
+.page-description {
+    margin-top: 7px;
+    color: var(--app-muted);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.page-actions,
+.filter-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 9px;
+}
+
+.filter-bar {
+    justify-content: space-between;
+    margin-bottom: 16px;
+}
+
+.filter-controls {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.filter-controls > .el-input,
+.filter-controls > .el-select {
+    width: 230px;
+}
+
+.table-panel {
+    overflow: hidden;
+    border: 1px solid var(--app-line);
+    border-radius: 10px;
+    background: #fff;
+}
+
+.table-pagination {
+    display: flex;
+    justify-content: flex-end;
+    padding: 16px 4px 0;
+}
+
+.result-count {
+    flex: 0 0 auto;
+    color: var(--app-muted);
+    font-size: 12px;
+}
+
+.settings-page {
+    width: min(100%, 880px);
+}
+
+.settings-card {
+    border-radius: 12px;
+}
+
+.settings-form {
+    max-width: 680px;
+}
+
+.auth-layout {
+    display: grid;
+    min-height: 100vh;
+    grid-template-columns: minmax(330px, 0.92fr) minmax(420px, 1.08fr);
+    background: #fff;
+}
+
+.auth-brand-panel {
+    position: relative;
+    display: flex;
+    min-height: 100vh;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 42px clamp(32px, 5vw, 76px) 28px;
+    overflow: hidden;
+    color: #f4f8f4;
+    background: var(--app-green-deep);
+}
+
+.auth-brand-panel::after {
+    position: absolute;
+    top: 0;
+    right: 28px;
+    width: 2px;
+    height: 100%;
+    background: rgba(201, 237, 114, 0.2);
+    content: '';
+}
+
+.auth-brand-lockup,
+.auth-brand-mobile {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.auth-brand-icon {
+    display: grid;
+    width: 44px;
+    height: 44px;
+    place-items: center;
+    border-radius: 12px;
+    color: var(--app-green-deep);
+    background: var(--app-lime);
+    font-size: 23px;
+}
+
+.auth-brand-name {
+    font-size: 13px;
+    font-weight: 800;
+}
+
+.auth-brand-caption {
+    margin-top: 5px;
+    color: #b2cbbb;
+    font-size: 12px;
+}
+
+.auth-brand-copy {
+    position: relative;
+    z-index: 1;
+    max-width: 510px;
+    padding: 72px 0;
+}
+
+.auth-brand-eyebrow {
+    color: var(--app-lime);
+    font-size: 11px;
+    font-weight: 800;
+}
+
+.auth-brand-headline {
+    margin-top: 20px;
+    color: #f6faf5;
+    font-size: 42px;
+    font-weight: 750;
+    line-height: 1.25;
+}
+
+.auth-brand-headline span {
+    color: var(--app-lime);
+}
+
+.auth-brand-description {
+    max-width: 390px;
+    margin-top: 18px;
+    color: #c1d2c6;
+    font-size: 14px;
+    line-height: 1.8;
+}
+
+.auth-brand-index {
+    display: flex;
+    gap: 18px;
+    margin-top: 42px;
+}
+
+.auth-brand-index span {
+    display: grid;
+    width: 40px;
+    height: 40px;
+    place-items: center;
+    border: 1px solid rgba(239, 247, 240, 0.2);
+    border-radius: 50%;
+    color: #dceadd;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.auth-brand-foot {
+    color: #94ad9d;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.auth-main-panel {
+    display: grid;
+    min-height: 100vh;
+    place-items: center;
+    padding: 48px 32px;
+}
+
+.auth-form-wrap {
+    width: min(100%, 420px);
+}
+
+.auth-brand-mobile {
+    display: none;
+}
+
+.auth-form-eyebrow {
+    color: var(--app-green);
+    font-size: 11px;
+    font-weight: 800;
+}
+
+.auth-form-title {
+    margin-top: 12px;
+    color: var(--app-ink);
+    font-size: 30px;
+    font-weight: 750;
+}
+
+.auth-form-description {
+    margin: 9px 0 28px;
+    color: var(--app-muted);
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+.auth-form .el-input__wrapper {
+    min-height: 48px;
+    padding: 0 14px;
+}
+
+.auth-submit {
+    width: 100%;
+    min-height: 48px;
+    margin-top: 8px;
+    font-size: 14px;
+}
+
+.auth-switch {
+    margin-top: 22px;
+    color: var(--app-muted);
+    font-size: 13px;
+    text-align: center;
+}
+
+.auth-switch a {
+    color: var(--app-green);
+    font-weight: 700;
+}
+
+@media (max-width: 640px) {
+    .page-heading {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 12px;
+        margin-bottom: 16px;
+    }
+
+    .page-title {
+        font-size: 21px;
+    }
+
+    .page-actions {
+        width: 100%;
+    }
+
+    .filter-bar,
+    .filter-controls {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .filter-controls,
+    .filter-controls > .el-input,
+    .filter-controls > .el-select {
+        width: 100%;
+    }
+
+    .filter-controls > .el-button {
+        align-self: flex-start;
+    }
+
+    .table-pagination {
+        justify-content: center;
+    }
+
+    .auth-layout {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .auth-brand-panel {
+        min-height: auto;
+        padding: 22px 24px;
+    }
+
+    .auth-brand-panel::after,
+    .auth-brand-copy,
+    .auth-brand-foot {
+        display: none;
+    }
+
+    .auth-brand-main-lockup {
+        display: none;
+    }
+
+    .auth-brand-mobile {
+        display: flex;
+    }
+
+    .auth-main-panel {
+        min-height: 0;
+        flex: 1;
+        align-items: start;
+        padding: 36px 24px 48px;
+    }
+
+    .auth-form-title {
+        font-size: 26px;
+    }
+
+    .settings-page {
+        width: 100%;
+    }
+
+    .el-card__header {
+        padding: 14px 16px;
+    }
+
+    .el-card__body {
+        padding: 16px;
+    }
+
+    .el-dialog__header {
+        padding: 18px 18px 12px;
+    }
+
+    .el-dialog__body {
+        padding: 6px 18px 16px;
+    }
+
+    .el-dialog__footer {
+        padding: 12px 18px 16px;
+    }
+
+    .el-pagination {
+        justify-content: center;
+        flex-wrap: wrap;
+        gap: 6px 0;
+    }
+}
