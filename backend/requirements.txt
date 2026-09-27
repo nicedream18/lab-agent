@@ -1,5 +1,8 @@
 fastapi==0.115.13
 uvicorn==0.34.0
+# 文件上传接口（app/api/files.py 的 UploadFile/File）必需，缺失时 import app.main 直接抛
+# RuntimeError: Form data requires "python-multipart" to be installed
+python-multipart==0.0.32
 sqlalchemy==2.0.41
 pymysql==1.1.1
 pydantic-settings==2.7.1

@@ -39,7 +39,12 @@ const router = createRouter({
       ]
     },
     { path: '/login', name: 'Login', component: () => import('@/views/Login.vue') },
-    { path: '/register', name: 'Register', component: () => import('@/views/Register.vue') }
+    { path: '/register', name: 'Register', component: () => import('@/views/Register.vue') },
+    // 兜底路由：未匹配的路径统一回首页。
+    // 没有它时，访问已下线的路径（比如旧版的任务中心 /manager/task-center）
+    // 会命中 vue-router 的 "No match found" 警告并渲染空白页，
+    // 用户看到的就是一片全白，不知道发生了什么。
+    { path: '/:pathMatch(.*)*', name: 'NotFound', redirect: '/manager/home' }
   ]
 })
 // 路由守卫：验证token
