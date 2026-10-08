@@ -1,7 +1,9 @@
-from sqlalchemy.orm import sessionmaker, DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import create_engine, DateTime
-from app.config import settings
 from datetime import datetime
+
+from sqlalchemy import DateTime, create_engine
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+
+from app.config import settings
 
 engine = create_engine(settings.DATABASE_URL)
 

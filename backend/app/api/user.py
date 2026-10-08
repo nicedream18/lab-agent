@@ -1,15 +1,13 @@
 from fastapi import APIRouter, Depends
-from app.common.response import Response
-from app.models.user import User
-from app.dependencies.auth import get_current_user
-from app.schemas.user import UserResponse
 from sqlalchemy.orm import Session
+
+from app.common.response import Response
 from app.database import get_db
-from app.schemas.user import UserUpdateRequest
-from app.services import user_service
+from app.dependencies.auth import get_current_admin, get_current_user
+from app.models.user import User
 from app.schemas.password import PasswordUpdateRequest
-from app.dependencies.auth import get_current_admin
-from app.schemas.user import UserCreateRequest
+from app.schemas.user import UserCreateRequest, UserResponse, UserUpdateRequest
+from app.services import user_service
 
 router = APIRouter(prefix="/user", tags=["用户信息接口"])
 

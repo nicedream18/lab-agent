@@ -1,12 +1,12 @@
-from email.policy import HTTP
 
-from fastapi.security import OAuth2PasswordBearer
 from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
+
+from app.common.exceptions import BusinessException
 from app.database import get_db
 from app.models.user import User
 from app.utils.jwt import decode_access_token
-from app.common.exceptions import BusinessException
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 

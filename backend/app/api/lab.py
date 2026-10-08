@@ -3,11 +3,10 @@ from sqlalchemy.orm import Session
 
 from app.common.response import Response
 from app.database import get_db
-from app.dependencies.auth import get_current_admin
+from app.dependencies.auth import get_current_admin, get_current_user
 from app.models.user import User
 from app.schemas.lab import LabCreateRequest, LabUpdateRequest
 from app.services import lab_service
-from app.dependencies.auth import get_current_user
 
 router = APIRouter(prefix="/lab", tags=["实验室管理"])
 

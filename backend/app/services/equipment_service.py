@@ -1,14 +1,14 @@
-from operator import or_
+from sqlalchemy.orm import Session
+
 from app.common.exceptions import BusinessException
 from app.common.response import PageResponse
 from app.models.equipment import Equipment
 from app.models.lab import Lab
 from app.schemas.equipment import (
-    EquipmentResponse,
     EquipmentCreateRequest,
+    EquipmentResponse,
     EquipmentUpdateRequest,
 )
-from sqlalchemy.orm import Session
 
 
 def get_equipment_page_list(

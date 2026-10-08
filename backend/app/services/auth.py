@@ -7,6 +7,7 @@ from app.schemas.user import UserResponse
 from app.utils.jwt import create_access_token
 from app.utils.password import hash_password, verify_password
 
+
 def login(db: Session, data: LoginRequest) -> LoginResponse:
     user = db.query(User).filter(User.username == data.username).first()
 
@@ -21,6 +22,7 @@ def login(db: Session, data: LoginRequest) -> LoginResponse:
         token=token,
         user=UserResponse.model_validate(user),
     )
+
 
 def register(db: Session, data: RegisterRequest) -> None:
     exists = db.query(User).filter(User.username == data.username).first()

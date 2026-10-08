@@ -1,16 +1,13 @@
-import keyword
-from operator import itemgetter, or_
+from operator import or_
 
-from fastapi import Query
+from sqlalchemy.orm import Session
 
 from app.common.exceptions import BusinessException
 from app.common.response import PageResponse
 from app.models.user import User
-from app.schemas.user import UserResponse, UserUpdateRequest
-from sqlalchemy.orm import Session
-
-from app.utils.password import verify_password, hash_password
 from app.schemas.password import PasswordUpdateRequest
+from app.schemas.user import UserResponse, UserUpdateRequest
+from app.utils.password import hash_password, verify_password
 
 
 def get_user_info(user: User) -> UserResponse:

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.common.exceptions import BusinessException
 from app.config import settings
-from app.schemas.ai import ChatMessage, ChatRequest
+from app.schemas.ai import ChatRequest
 from app.services import equipment_service, kb_service, lab_service
 
 TOOLS = [

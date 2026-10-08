@@ -1,14 +1,15 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
+
 from app.common.response import Response
-from app.models.equipment import Equipment
+from app.database import get_db
 from app.dependencies.auth import get_current_admin, get_current_user
+from app.models.equipment import Equipment
 from app.schemas.equipment import (
     EquipmentCreateRequest,
     EquipmentUpdateRequest,
 )
 from app.services import equipment_service
-from app.database import get_db
 
 router = APIRouter(prefix="/equipment", tags=["实验室设备信息接口"])
 

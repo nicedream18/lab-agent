@@ -1,13 +1,15 @@
+import json
+
 from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+
 from app.common.response import Response
 from app.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.user import User
 from app.schemas.ai import ChatMessage, ChatRequest
-from app.services import agent_service, ai_service
-import json
-from fastapi.responses import StreamingResponse
+from app.services import agent_service
 
 router = APIRouter(prefix="/ai", tags=["AI相关的API"])
 

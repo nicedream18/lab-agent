@@ -1,18 +1,13 @@
-from fastapi import FastAPI
-from app.models.user import User
-from app.models.lab import Lab
-from app.models.equipment import Equipment
-from app.models.reservation import Reservation
-from app.database import Base, engine
-from fastapi.staticfiles import StaticFiles
-from app.config import UPLOAD_DIR
 import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from app.services import reservation_service
-from app.services import kb_service
-from app.config import settings
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+
+from app.config import UPLOAD_DIR, settings
+from app.database import Base, engine
+from app.services import kb_service, reservation_service
 
 # 必须配一次根 logger，否则 logger.info 会被静默丢弃
 # （root logger 默认级别是 WARNING，只有 error/exception 才打得出来）。
@@ -23,17 +18,18 @@ logging.basicConfig(
 )
 
 Base.metadata.create_all(bind=engine)
-from app.api import api
-from fastapi import FastAPI, HTTPException
+from fastapi import HTTPException
 from fastapi.exceptions import RequestValidationError
+from starlette.middleware.cors import CORSMiddleware
+
+from app.api import api
 from app.common.exceptions import (
     BusinessException,
     bussiness_excpetion_hadler,
+    global_excpetion_hadler,
     http_excpetion_hadler,
     validation_excpetion_hadler,
-    global_excpetion_hadler,
 )
-from starlette.middleware.cors import CORSMiddleware
 
 origins = [
     "http://localhost:5173",
