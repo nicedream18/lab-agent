@@ -20,9 +20,15 @@ def chat(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # content = ai_service.chat(db, data)
     content = agent_service.run_agent(db, current_user, data)
-    return Response.success(data=ChatMessage(role="assistant", content=content))
+    # run_agent 内部保证 conversation_id 已回填，顺带下发给前端拉取执行轨迹
+    return Response.success(
+        data=ChatMessage(
+            role="assistant",
+            content=content,
+            conversation_id=data.conversation_id,
+        )
+    )
 
 
 def _sse_line(payload: dict) -> str:

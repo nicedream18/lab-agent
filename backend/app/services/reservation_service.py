@@ -156,3 +156,193 @@ async def run_expire_scan():
     while True:
         expire_pending_reservations()
         await asyncio.sleep(60)
+
+
+# ============================================================================
+# 可用性查询（供 Agent 工具调用）
+#
+# 放在 service 层而不是 tools.py 里，是因为这属于「业务规则」：
+# 什么算占用、粒度多粗、开放时间怎么取，都是实验室预约领域的定义。
+# Tool 只应该是一层薄薄的适配器。
+# ============================================================================
+
+# 时间槽粒度：以 1 小时为最小可约单位
+SLOT_MINUTES = 60
+
+DEFAULT_OPEN_TIME = "08:00"
+DEFAULT_CLOSE_TIME = "21:00"
+
+
+def _to_minutes(value: str) -> int:
+    """'9:30' / '09:30' → 570。
+
+    数据库里 open_time 存的是 '08:00'，但模型抽出来的可能是 '9:00'，
+    所以必须容错，不能直接 int(value[:2])。
+    """
+    text = (value or "").strip()
+    parts = text.split(":")
+    if len(parts) < 2:
+        raise BusinessException(message=f"时间格式不正确：{value}")
+    try:
+        return int(parts[0]) * 60 + int(parts[1])
+    except ValueError:
+        raise BusinessException(message=f"时间格式不正确：{value}") from None
+
+
+def _to_hhmm(minutes: int) -> str:
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def _overlap(start_a: str, end_a: str, start_b: str, end_b: str) -> bool:
+    """两个时间区间是否重叠。[start, end) 左闭右开。
+
+    条件写成 `a_start < b_end and a_end > b_start`，
+    用 <= / >= 会把「上一场 12:00 结束、下一场 12:00 开始」误判成冲突。
+    """
+    return _to_minutes(start_a) < _to_minutes(end_b) and _to_minutes(
+        end_a
+    ) > _to_minutes(start_b)
+
+
+def list_busy_slots(
+    db: Session, lab_id: int, date: str, equipment_id: int | None = None
+) -> list[dict]:
+    """列出某实验室（或某台设备）在某天已被占用的时段。
+
+    只统计 0(待审核) 和 1(已通过)，2(已拒绝)/3(已取消) 不算占用。
+    """
+    query = db.query(Reservation).filter(
+        Reservation.lab_id == lab_id,
+        Reservation.date == date,
+        Reservation.status.in_([0, 1]),
+    )
+    if equipment_id:
+        query = query.filter(Reservation.equipment_id == equipment_id)
+    else:
+        # 不指定设备时看的是「实验室整体」，此时只看不绑设备的预约记录
+        query = query.filter(Reservation.equipment_id.is_(None))
+
+    return [
+        {"start_time": item.start_time, "end_time": item.end_time, "status": item.status}
+        for item in query.order_by(Reservation.start_time).all()
+    ]
+
+
+def has_conflict(
+    db: Session,
+    lab_id: int,
+    date: str,
+    start_time: str,
+    end_time: str,
+    equipment_id: int | None = None,
+) -> bool:
+    """指定时段是否已被占用。"""
+    for busy in list_busy_slots(db, lab_id, date, equipment_id):
+        if _overlap(start_time, end_time, busy["start_time"], busy["end_time"]):
+            return True
+    return False
+
+
+def get_lab_availability(db: Session, lab: Lab, date: str) -> dict:
+    """给出某实验室某天的完整可用性视图：开放窗口 + 占用时段 + 空闲时段。"""
+    open_time = lab.open_time or DEFAULT_OPEN_TIME
+    close_time = lab.close_time or DEFAULT_CLOSE_TIME
+    busy = list_busy_slots(db, lab.id, date)
+
+    free = []
+    cursor = _to_minutes(open_time)
+    close_minutes = _to_minutes(close_time)
+    while cursor + SLOT_MINUTES <= close_minutes:
+        slot_start = _to_hhmm(cursor)
+        slot_end = _to_hhmm(cursor + SLOT_MINUTES)
+        if not any(
+            _overlap(slot_start, slot_end, item["start_time"], item["end_time"])
+            for item in busy
+        ):
+            free.append({"start_time": slot_start, "end_time": slot_end})
+        cursor += SLOT_MINUTES
+
+    return {
+        "lab_id": lab.id,
+        "lab_name": lab.name,
+        "location": lab.location,
+        "date": date,
+        "open_time": open_time,
+        "close_time": close_time,
+        "open_status": lab.status,
+        "busy_slots": busy,
+        "free_slots": free,
+    }
+
+
+def find_alternative_slots(
+    db: Session,
+    lab: Lab,
+    date: str,
+    duration_minutes: int = 180,
+    preferred_start: str | None = None,
+    limit: int = 3,
+) -> list[dict]:
+    """在给定日期内寻找满足时长的空闲连续时段。
+
+    排序策略：优先离用户原本想要的时间最近的时段。
+    这比「从早到晚顺排」更贴近真实推荐逻辑 —— 用户说下午 2 点，
+    推荐 15:00 远比推荐 08:00 有用。
+    """
+    avail = get_lab_availability(db, lab, date)
+    free = avail["free_slots"]
+    if not free:
+        return []
+
+    # 把连续的空闲小时槽合并成区间，否则 14-15 / 15-16 / 16-17 会被当成三段
+    merged: list[dict] = []
+    for slot in free:
+        if merged and merged[-1]["end_time"] == slot["start_time"]:
+            merged[-1]["end_time"] = slot["end_time"]
+        else:
+            merged.append(dict(slot))
+
+    target = _to_minutes(preferred_start) if preferred_start else None
+    candidates = []
+    for block in merged:
+        start_m = _to_minutes(block["start_time"])
+        end_m = _to_minutes(block["end_time"])
+        cursor = start_m
+        while cursor + duration_minutes <= end_m:
+            candidates.append(
+                {
+                    "start_time": _to_hhmm(cursor),
+                    "end_time": _to_hhmm(cursor + duration_minutes),
+                    "gap": abs(cursor - target) if target is not None else 0,
+                }
+            )
+            cursor += SLOT_MINUTES
+
+    candidates.sort(key=lambda item: (item["gap"], item["start_time"]))
+    for item in candidates:
+        item.pop("gap", None)
+    return candidates[:limit]
+
+
+def get_latest_reservation(
+    db: Session,
+    user_id: int,
+    lab_id: int | None = None,
+    date: str | None = None,
+) -> Reservation | None:
+    """查用户最近一条预约，用于预约后的结果核验。"""
+    query = db.query(Reservation).filter(Reservation.user_id == user_id)
+    if lab_id:
+        query = query.filter(Reservation.lab_id == lab_id)
+    if date:
+        query = query.filter(Reservation.date == date)
+    return query.order_by(Reservation.id.desc()).first()
+
+
+def count_active_reservations(db: Session, user_id: int) -> int:
+    """用户名下「待审核 + 已通过」的预约总数，用于配额校验。"""
+    return (
+        db.query(Reservation)
+        .filter(Reservation.user_id == user_id, Reservation.status.in_([0, 1]))
+        .count()
+    )

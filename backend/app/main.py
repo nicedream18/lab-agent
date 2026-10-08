@@ -17,6 +17,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
+logger = logging.getLogger(__name__)
+
 Base.metadata.create_all(bind=engine)
 from fastapi import HTTPException
 from fastapi.exceptions import RequestValidationError
@@ -37,8 +39,42 @@ origins = [
 ]
 
 
+def _log_outbound_status() -> None:
+    """启动自检：把出网环境的关键状态打到日志里。
+
+    存在的唯一理由是「不可见故障」：目标大模型域名同时有 A / AAAA 记录，
+    而它的 IPv6 入口会在 TLS 阶段被 RST。我们的对策是强制 IPv4，
+    但这件事**可能静默失效**（uvloop 绕过 socket.getaddrinfo）。
+    失效时的表现是「同步接口正常、流式接口报一个含糊的 Connection error」，
+    从堆栈上完全看不出和 DNS 有关 —— 所以启动时就把这几行摆出来。
+    """
+    from app.utils import net
+
+    if not settings.LLM_FORCE_IPV4:
+        logger.info("出网自检：LLM_FORCE_IPV4=false，不做 IPv4 强制（如需规避 AAAA 故障请设 true）")
+        return
+
+    loop = asyncio.get_running_loop()
+    hosts = "、".join(sorted(net.ipv4_only_hosts())) or "（空）"
+    logger.info(
+        "出网自检：事件循环=%s，IPv4 强制主机=%s，uvloop 补丁=%s",
+        type(loop).__name__,
+        hosts,
+        "已接管" if net.uvloop_patch_active() else "未接管",
+    )
+    if net.is_uvloop(loop) and not net.uvloop_patch_active():
+        # 这条 warn 是刻意留的：出现它就意味着流式链路正在走 IPv6，
+        # 大概率会失败。补救办法是改用 `uvicorn --loop asyncio`。
+        logger.warning(
+            "事件循环是 uvloop，但 IPv4 补丁未接管：异步流式请求可能走 IPv6 被 RST。"
+            "请改用 `uvicorn --loop asyncio` 启动，或升级 uvloop 后重试。"
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _log_outbound_status()
+
     task = asyncio.create_task(
         reservation_service.run_expire_scan()
     )  # 启动项目开启异步的扫描任务

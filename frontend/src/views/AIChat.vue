@@ -37,11 +37,6 @@
             <div v-if="item.role === 'assistant' && item.status" class="message-status">
               {{ item.status }}
             </div>
-            <div v-if="item.role === 'assistant' && item.steps?.length" class="message-steps">
-              <div v-for="(step, stepIndex) in item.steps" :key="stepIndex">
-                <span></span>{{ step }}
-              </div>
-            </div>
             <div class="message-content" v-html="parseMarkdown(item.content)"></div>
           </div>
         </div>
@@ -85,13 +80,26 @@
       </div>
       <div class="composer-caption">回答由 AI 生成，请以系统展示的实验室信息与审核结果为准。</div>
     </section>
+
+    <AgentTracePanel
+      :trace="trace"
+      :memories="memories"
+      :tools="agentTools"
+      @refresh-memory="loadMemory"
+    />
   </div>
 </template>
 
 <script setup>
 import { chatStreamApi } from '@/api/ai'
-import { ref, reactive, nextTick } from 'vue'
+import { getAgentMemoryApi, getAgentToolsApi } from '@/api/agent'
+import { applyAgentEvent, createTraceState, finishTrace } from '@/utils/agentTrace'
+import AgentTracePanel from '@/components/AgentTracePanel.vue'
+import { ref, reactive, nextTick, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
+// 图标已经在 main.js 里全局注册，但 :icon="ArrowUp" 是 JS 表达式，
+// 全局组件拿不到这个变量，必须显式 import，否则图标一直是 undefined。
+import { ArrowUp } from '@element-plus/icons-vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify' // 过滤危险的 HTML，防止 XSS 攻击
 
@@ -104,16 +112,27 @@ const messages = ref([
   {
     role: 'assistant',
     content:
-      '你好，我是实验室预约助手。可以问规则和开放实验室，也可以说「帮我预约明天下午的实验室」，确认后我会帮你提交。'
+      '你好，我是实验室预约助手。我背后是一条 Agent 工作流：先理解你的需求，再拆解成任务、逐个调用业务工具，最后自我校验。右侧会实时展示我的“思考轨迹”。'
   }
 ])
 const input = ref('')
 const loading = ref(false)
 const listRef = ref()
+
+// 会话 id：由后端下发，多轮对话靠它串成同一条会话，
+// 右侧面板的「历史轨迹」和后端长期记忆都依赖它。
+const conversationId = ref('')
+
+// Agent 执行轨迹。事件折叠逻辑全部在 utils/agentTrace.js 里，
+// 这里只负责「收到事件 → 更新状态」，保持视图层干净。
+const trace = reactive(createTraceState())
+const memories = ref([])
+const agentTools = ref([])
+
 const suggestedPrompts = [
+  '帮我预约明天下午2点到5点的计算机实验室，如果没有空闲就推荐其他时间',
   '现在有哪些开放的实验室？',
-  '预约实验室需要遵守哪些规则？',
-  '物理实验室有哪些设备？'
+  '预约实验室需要遵守哪些规则？'
 ]
 
 const scrollToBottom = () => {
@@ -123,20 +142,45 @@ const scrollToBottom = () => {
   })
 }
 
+// 长期记忆和工具清单都是「锦上添花」的辅助信息，
+// 拉取失败不应该打扰用户，静默降级成空列表即可。
+const loadMemory = async () => {
+  try {
+    const res = await getAgentMemoryApi()
+    memories.value = res.data || []
+  } catch {
+    memories.value = []
+  }
+}
+
+const loadTools = async () => {
+  try {
+    const res = await getAgentToolsApi()
+    agentTools.value = res.data || []
+  } catch {
+    agentTools.value = []
+  }
+}
+
+onMounted(() => {
+  loadMemory()
+  loadTools()
+})
+
 const handleSend = async () => {
   const text = input.value.trim()
   if (!text || loading.value) return
   messages.value.push({ role: 'user', content: text })
   input.value = ''
   loading.value = true
+
+  // 每一轮都是一次全新的工作流执行，轨迹必须清空，
+  // 否则上一轮的结果会和本轮混在一起，看不出因果关系。
+  Object.assign(trace, createTraceState())
+  trace.running = true
   scrollToBottom()
 
-  const assistant = reactive({
-    role: 'assistant',
-    content: '',
-    status: '正在思考…',
-    steps: []
-  })
+  const assistant = reactive({ role: 'assistant', content: '', status: '正在思考…' })
   messages.value.push(assistant)
 
   const history = messages.value
@@ -145,37 +189,54 @@ const handleSend = async () => {
     .slice(-MAX_HISTORY)
     .map(({ role, content }) => ({ role, content }))
 
+  const startedAt = Date.now()
+  let failed = false
+
   try {
-    await chatStreamApi({ messages: history }, (evt) => {
-      if (evt.type === 'status') {
-        assistant.status = evt.message || '正在思考…'
-      } else if (evt.type === 'tool_start') {
-        const label = evt.label || evt.name || '工具'
-        assistant.status = `正在${label}…`
-        assistant.steps.push(`开始：${label}`)
-      } else if (evt.type === 'tool_end') {
-        const label = evt.label || evt.name || '工具'
-        assistant.status = `${label}完成`
-        assistant.steps.push(`完成：${label}`)
-      } else if (evt.type === 'token') {
-        assistant.content += evt.content || ''
-        assistant.status = ''
-      } else if (evt.type === 'done') {
-        assistant.status = ''
-      } else if (evt.type === 'error') {
-        assistant.status = ''
-        if (!assistant.content) assistant.content = evt.message || '请求失败'
-        ElMessage.error(evt.message || '请求失败')
+    await chatStreamApi(
+      {
+        messages: history,
+        ...(conversationId.value ? { conversation_id: conversationId.value } : {})
+      },
+      (evt) => {
+        // 先把事件折叠进轨迹，顺便拿到可能的运行提示文案
+        const hint = applyAgentEvent(trace, evt)
+
+        if (evt.type === 'session') {
+          conversationId.value = evt.conversation_id || conversationId.value
+        } else if (evt.type === 'token') {
+          assistant.content += evt.content || ''
+          assistant.status = ''
+        } else if (evt.type === 'done') {
+          assistant.status = ''
+          if (!assistant.content) assistant.content = evt.answer || ''
+        } else if (evt.type === 'error') {
+          failed = true
+          assistant.status = ''
+          if (!assistant.content) assistant.content = evt.message || '请求失败'
+          ElMessage.error(evt.message || '请求失败')
+        } else if (evt.type === 'status') {
+          assistant.status = evt.message || '正在思考…'
+        } else if (hint) {
+          assistant.status = hint
+        }
+        scrollToBottom()
       }
-      scrollToBottom()
-    })
+    )
   } catch (error) {
+    failed = true
     assistant.status = ''
     if (!assistant.content) assistant.content = error.message || '网络异常'
     ElMessage.error(error.message || '网络异常')
   } finally {
     loading.value = false
     assistant.status = ''
+    // 兜底收尾：某些异常路径不会发 node end 事件，
+    // 不处理的话界面上会有一条永远转圈的记录。
+    finishTrace(trace, { failed })
+    trace.totalMs = Date.now() - startedAt
+    // 预约成功后后端会自动学习偏好，刷新一次才能看到新记忆
+    if (trace.toolCount) loadMemory()
     scrollToBottom()
   }
 }
@@ -195,14 +256,20 @@ const parseMarkdown = (text) => {
 </script>
 
 <style scoped>
+/* 左侧对话 + 右侧 Agent 轨迹。
+   直接改 .ai-page 的布局（而不是再包一层 wrapper），
+   这样整棵子树的缩进都不用动，diff 也小得多。 */
 .ai-page {
-  display: flex;
+  display: grid;
   min-height: 0;
-  flex-direction: column;
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) 336px;
+  gap: 14px;
 }
 
 .ai-page-heading {
   align-items: center;
+  grid-column: 1 / -1;
 }
 
 .ai-availability {
@@ -329,28 +396,6 @@ const parseMarkdown = (text) => {
   font-size: 11px;
 }
 
-.message-steps {
-  display: grid;
-  gap: 5px;
-  margin-bottom: 8px;
-  color: #74867b;
-  font-size: 11px;
-}
-
-.message-steps > div {
-  display: flex;
-  align-items: baseline;
-  gap: 7px;
-}
-
-.message-steps span {
-  width: 5px;
-  height: 5px;
-  flex: 0 0 5px;
-  border-radius: 50%;
-  background: #8fac98;
-}
-
 .message-content :deep(p) {
   margin: 0 0 8px;
 }
@@ -426,6 +471,14 @@ const parseMarkdown = (text) => {
   padding: 0 20px 12px;
   color: #849087;
   font-size: 10px;
+}
+
+@media (max-width: 1120px) {
+  /* 窄屏放不下两栏，轨迹面板移到对话下方 */
+  .ai-page {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto;
+  }
 }
 
 @media (max-width: 640px) {
