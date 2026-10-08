@@ -63,16 +63,15 @@ def node_analyze(ctx: AgentContext):
         _bind_writer(ctx)
         with trace_node(ctx, "analyze", input_text=state.get("user_query") or "") as box:
             result = planner.analyze(ctx, state)
+            # 轨迹是给人看的，同样不能出现裸字段名
             box["output"] = (
-                f"意图={result['intent']}；"
                 f"槽位={result['slots']}；"
-                f"缺失={result['missing_slots']}；"
+                f"缺失={planner.missing_labels(result['missing_slots']) or '无'}；"
                 f"授权={result['authorized']}"
             )
             ctx.emit(
                 {
                     "type": "analysis",
-                    "intent": result["intent"],
                     "slots": result["slots"],
                     "missing_slots": result["missing_slots"],
                     "authorized": result["authorized"],
@@ -427,23 +426,49 @@ def _initial_state(
     )
 
 
+def resolve_history(
+    conversation_id: str, history: list[dict] | None
+) -> list[dict]:
+    """决定这一轮用哪份对话历史。
+
+    调用方（前端）带上来的历史优先：它是抗刷新、抗重启的那一份记录。
+    进程内记忆只在请求没带历史时兜底 —— 它一重启就清空，而开发环境跑的是
+    `--reload`，改任何一个 .py 都会重启，用户看到的现象就是「上一轮刚说过的
+    实验室，这一轮又问我一遍」。
+    """
+    if history:
+        return history
+    return memory.get_history(conversation_id)
+
+
 def prepare(
-    db: Session, user: User, conversation_id: str, query: str
+    db: Session,
+    user: User,
+    conversation_id: str,
+    query: str,
+    history: list[dict] | None = None,
 ) -> tuple[AgentContext, AgentState, dict]:
     """非流式入口：跑完整个工作流，返回 (ctx, 终态, 图)。"""
     ctx = AgentContext(db=db, user=user, conversation_id=conversation_id)
-    history = memory.get_history(conversation_id)
-    state = _initial_state(ctx, query, history)
+    resolved = resolve_history(conversation_id, history)
+    state = _initial_state(ctx, query, resolved)
     return ctx, state, build_graph(ctx)
 
 
 class WorkflowRunner:
     """一次问答的执行器。流式和非流式共用同一张图。"""
 
-    def __init__(self, db: Session, user: User, conversation_id: str, query: str):
+    def __init__(
+        self,
+        db: Session,
+        user: User,
+        conversation_id: str,
+        query: str,
+        history: list[dict] | None = None,
+    ):
         self.ctx = AgentContext(db=db, user=user, conversation_id=conversation_id)
         self.query = query
-        self.history = memory.get_history(conversation_id)
+        self.history = resolve_history(conversation_id, history)
         self.state = _initial_state(self.ctx, query, self.history)
         self.graph = build_graph(self.ctx)
 

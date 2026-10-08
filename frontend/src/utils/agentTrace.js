@@ -36,16 +36,6 @@ export const TOOL_LABELS = {
   get_today: '获取当前日期'
 }
 
-export const INTENT_LABELS = {
-  reserve_lab: '预约实验室',
-  query_lab: '查询实验室',
-  query_equipment: '查询设备',
-  query_rules: '查询规则',
-  query_my_reservation: '查询我的预约',
-  cancel_reservation: '取消预约',
-  other: '普通对话'
-}
-
 export const SLOT_LABELS = {
   lab_name: '实验室',
   equipment_name: '设备',
@@ -170,7 +160,6 @@ export function applyAgentEvent(trace, evt) {
       return applyNodeEvent(trace, evt)
     case 'analysis':
       trace.analysis = {
-        intent: INTENT_LABELS[evt.intent] || evt.intent || '未知',
         slots: evt.slots || {},
         missing: evt.missing_slots || [],
         authorized: Boolean(evt.authorized),
@@ -206,4 +195,41 @@ export function finishTrace(trace, { failed = false } = {}) {
     if (item.status === 'running') item.status = failed ? 'failed' : 'done'
   })
   trace.running = false
+}
+
+/**
+ * 从本地留档恢复上一轮的轨迹（刷新页面用）。
+ *
+ * 唯一需要修补的是「运行中」：留档可能是在一轮对话跑到一半时写下的，
+ * 而那些条目再也不会有人来给它们收尾了。统一改成 stopped ——
+ * 既不能继续转圈（假装还在跑），也不能标成 done（谎称跑完了）。
+ */
+export function restoreTraceState(saved) {
+  const trace = createTraceState()
+  if (!saved || typeof saved !== 'object') return trace
+
+  trace.items = (Array.isArray(saved.items) ? saved.items : [])
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => ({
+      id: Number(item.id) || 0,
+      kind: item.kind || 'node',
+      label: item.label || '',
+      detail: item.detail || '',
+      status: item.status === 'running' ? 'stopped' : item.status || 'done',
+      duration: typeof item.duration === 'number' ? item.duration : null,
+      reason: item.reason || ''
+    }))
+
+  // id 是 :key，恢复出来的条目已经占用了 1..n，自增游标必须跳过它们，
+  // 否则下一轮新起的条目会和旧条目撞 id（Vue 复用错节点）。
+  seq = Math.max(seq, ...trace.items.map((item) => item.id), 0)
+
+  trace.analysis = saved.analysis || null
+  trace.plan = Array.isArray(saved.plan) ? saved.plan : []
+  trace.planRound = Number(saved.planRound) || 0
+  trace.reflection = saved.reflection || null
+  trace.totalMs = typeof saved.totalMs === 'number' ? saved.totalMs : null
+  trace.toolCount = Number(saved.toolCount) || 0
+  trace.running = false
+  return trace
 }

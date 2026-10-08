@@ -58,7 +58,6 @@ class AgentState(TypedDict, total=False):
 
     # ---------- 理解阶段产出 ----------
     user_query: str
-    intent: str  # reserve_lab / query_lab / query_rules / query_equipment / other
     slots: dict[str, Any]  # lab_name / date / start_time / end_time / ...
     missing_slots: list[str]  # 缺失的关键信息，用于向用户追问
     # 预约授权闸门：只有它为 True，计划里才允许出现 create_reservation。

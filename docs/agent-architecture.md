@@ -78,7 +78,7 @@ stateDiagram-v2
 
 | 节点 | 标签 | 职责 | 是否调用 LLM |
 |---|---|---|---|
-| `analyze` | 理解用户需求 | 解析 intent / slots / missing_slots / authorized | ✅ 1 次（失败走规则兜底） |
+| `analyze` | 理解用户需求 | 解析 slots / missing_slots / authorized（**不产出意图**，见 §7.1） | ✅ 1 次（失败走规则兜底） |
 | `plan` | 制定任务计划 | 生成有序工具调用计划，经白名单过滤 | ✅ 1 次（熔断/只读轮走确定性计划） |
 | `route` | 选择工具 | 补全当前步参数，决定执行还是跳过 | 仅在参数不全时调用 |
 | `execute` | 执行工具 | 调 `run_tool`，结果写入 `tool_results` | ❌ |
@@ -109,8 +109,7 @@ class AgentState(TypedDict, total=False):
     history: list[dict]           # 短期记忆：最近 MAX_HISTORY_MESSAGES=20 条
     memory_context: str           # 长期记忆：渲染成文本塞进规划提示词
 
-    # analyzer 产出
-    intent: str
+    # analyzer 产出（只有任务状态，没有分类标签）
     slots: dict
     missing_slots: list[str]
     authorized: bool              # 写库闸门，见 §7
@@ -267,8 +266,33 @@ def some_tool(ctx: AgentContext, ...) -> dict: ...
    是最需要被看见的一类降级，不能埋在 `info` 里。
 
 `_ensure_write_step` **绝不**补齐的场合：`read_only` 轮 / 未授权 / 槽位不全 /
-非 `reserve_lab` 意图 / 空计划（空计划说明模型整段没产出，应整份换成兜底计划，
+空计划（空计划说明模型整段没产出，应整份换成兜底计划，
 否则会得到一个没有前置校验的裸写库计划）。
+
+### 7.1 为什么没有「意图识别」这一步
+
+`analyze` 刻意**不输出意图**（既不调 LLM 分类，也不做关键字匹配）。
+
+规划器本来就拿得到「用户原话 + 槽位 + 缺失项」——意图标签在里面是冗余的：
+与其先猜一个类别、再让规划器按类别选工具（多一次「分类判错、后面全错」的机会），
+不如让规划器直接读懂用户想干什么。少一个中间结论，就少一处失真。
+
+`analyze` 留下的三个产出都是**任务状态**而不是分类标签：
+用户说了什么（`slots`）、还缺什么（`missing_slots`）、能不能写库（`authorized`）。
+前两个是事实，第三个是安全闸门。
+
+对应地，模型不可用时的 `_fallback_plan` 也不按意图分支，只用两个确定性事实选流程：
+槽位是否齐全、本轮是否字面上下单。代价是「查制度 / 查设备」这类非预约诉求
+在降级时会退化成「先列出开放实验室」—— 这是有意的取舍：宁可给一个真实但宽泛
+的答案，也不靠关键字去猜用户想干什么。
+
+### 7.2 孤立的验证步骤必须一并摘除
+
+`_sanitize_plan` 摘掉 `create_reservation` 时，会**同时**摘掉计划里的
+`verify_reservation`。原因：没有写库却去验证，`verify_reservation`
+查的是「该用户在该实验室该日期的预约记录」，它完全可能查到**上一轮就已存在**的
+历史记录；`reflect` 与最终回复会据此宣布「预约已成功创建，reservation_id 为 12」——
+一个刚被系统拦下的操作，被讲成了成功。宁可不验证，也不能说假话。
 
 ### 另一道闸门：`read_only` 恢复轮
 
@@ -297,7 +321,7 @@ def some_tool(ctx: AgentContext, ...) -> dict: ...
   因此 `is_rate_limited()` 单独识别 429，`is_transient()` 对它返回 `False`，
   熔断后本轮其余环节全部改走确定性路径。
 - **最后一步不重试。** `respond` 单次尝试 + 首包超时 `LLM_FIRST_TOKEN_TIMEOUT=10.0`，
-  失败则用 `_compose_fallback_reply` 拼出意图感知的兜底文案（已发送部分输出
+  失败则用 `_compose_fallback_reply` 按缺失信息拼出兜底文案（已发送部分输出
   则不重试，直接保留）。
 - **只读轮走确定性计划**，把健康轮次的调用数从 6 次降到 4 次，省下的额度留给
   真正需要推理的环节。
@@ -333,7 +357,7 @@ def some_tool(ctx: AgentContext, ...) -> dict: ...
 | 规范要求 | 实现 | 原因 |
 |---|---|---|
 | `check_user_permission(user_id, lab_id)` | `check_user_permission(lab_name)` | 防 IDOR：身份只能来自 `ctx.user`，不能让模型传 `user_id` |
-| `AgentState.task_plan` / `current_step` | `plan` / `cursor` | 命名对齐实现语义；另新增 `authorized` / `read_only` / `intent` 等字段 |
+| `AgentState.task_plan` / `current_step` | `plan` / `cursor` | 命名对齐实现语义；另新增 `authorized` / `read_only` 等字段 |
 | — | 新增 `authorized` 写库闸门 | 不允许 LLM 单方面写数据库（教训见 §7） |
 | — | 新增 `read_only` 恢复轮 | 换时间属于改变诉求，必须由用户确认 |
 | — | 每个 LLM 环节都有确定性兜底 | 模型不可用时主流程仍需跑通 |
@@ -354,7 +378,7 @@ def some_tool(ctx: AgentContext, ...) -> dict: ...
 | `session` | `conversation_id` |
 | `status` | `message` |
 | `node` | `node` / `label` / `status`(start\|end) / `detail` / `state` / `duration_ms` |
-| `analysis` | `intent` / `slots` / `missing_slots` / `authorized` / `detail` |
+| `analysis` | `slots` / `missing_slots` / `authorized` / `detail` |
 | `plan` | `round` / `steps[]` |
 | `step` | `id` / `tool` / `label` / `status` / `args` \| `detail` \| `result` / `reason` |
 | `reflection` | `verdict` / `text` / `round` |
@@ -377,7 +401,7 @@ def some_tool(ctx: AgentContext, ...) -> dict: ...
 
 ```
 9 个节点 · 5 次工具调用 · 7.4s
-  理解用户需求        1608.9ms  意图=reserve_lab；授权=True
+  理解用户需求        1608.9ms  槽位={'lab_name': '计算机实验室', 'date': ...}；授权=True
   制定任务计划        3700.3ms  list_open_labs → check_user_permission
                                 → query_lab_availability → create_reservation
                                 → verify_reservation

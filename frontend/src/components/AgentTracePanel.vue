@@ -30,6 +30,7 @@
           <span class="trace-icon">
             <el-icon v-if="item.status === 'running'" class="is-spin"><Loading /></el-icon>
             <el-icon v-else-if="item.status === 'failed'"><Close /></el-icon>
+            <el-icon v-else-if="item.status === 'stopped'"><Minus /></el-icon>
             <el-icon v-else><Check /></el-icon>
           </span>
           <div class="trace-text">
@@ -61,7 +62,6 @@
       <section v-if="trace.analysis" class="trace-block">
         <div class="trace-block-title">需求理解</div>
         <div class="trace-kv">
-          <span>意图</span><b>{{ trace.analysis.intent }}</b>
           <span>允许下单</span>
           <b :class="trace.analysis.authorized ? 'kv-yes' : 'kv-no'">
             {{ trace.analysis.authorized ? '是' : '否' }}
@@ -71,7 +71,7 @@
           </template>
         </div>
         <div v-if="trace.analysis.missing.length" class="trace-missing">
-          缺失信息：{{ trace.analysis.missing.join('、') }}
+          缺失信息：{{ missingText }}
         </div>
       </section>
 
@@ -126,6 +126,14 @@ const emit = defineEmits(['refresh-memory'])
 
 const collapsed = ref(false)
 const slotLabels = SLOT_LABELS
+
+// 事件里带的是原始槽位名（lab_name / date …），那是前后端的内部契约；
+// 面板是给人看的，统一翻成中文，认不出来的键原样显示。
+const missingText = computed(() =>
+  (props.trace.analysis?.missing || [])
+    .map((key) => slotLabels[key] || key)
+    .join('、')
+)
 
 const subtitle = computed(() => {
   const { running, toolCount, totalMs, items } = props.trace
@@ -278,6 +286,13 @@ const subtitle = computed(() => {
   background: #cf7a70;
 }
 
+/* 刷新页面时被中断的节点：既不转圈（早就不跑了），也不打勾（确实没跑完） */
+.trace-item--stopped .trace-icon {
+  border-color: #d8dfd9;
+  color: #96a49b;
+  background: #fff;
+}
+
 .trace-item--tool .trace-icon {
   border-radius: 4px;
 }
@@ -303,6 +318,10 @@ const subtitle = computed(() => {
 
 .trace-item--failed .trace-label {
   color: #a8524a;
+}
+
+.trace-item--stopped .trace-label {
+  color: var(--app-muted);
 }
 
 .trace-label em {

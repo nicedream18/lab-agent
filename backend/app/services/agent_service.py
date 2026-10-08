@@ -19,6 +19,7 @@ from collections.abc import AsyncIterator
 from sqlalchemy.orm import Session
 
 from app.agent import graph as workflow
+from app.agent.state import MAX_HISTORY_MESSAGES
 from app.common.exceptions import BusinessException
 from app.models.user import User
 from app.schemas.ai import ChatRequest
@@ -51,6 +52,29 @@ def _last_user_query(data: ChatRequest) -> str:
     raise BusinessException(message="请输入您要对话的内容")
 
 
+def _history_from_request(data: ChatRequest, query: str) -> list[dict] | None:
+    """把前端带上来的历史对话整理成短期记忆（role/content 列表）。
+
+    为什么以请求为准、而不只靠 memory 层的进程内会话：
+    1. 进程内会话一重启就没了。开发环境跑的是 `--reload`，改任何一个 .py 都会重启，
+       用户看到的现象就是「上一轮刚说过的实验室，这一轮又问我一遍」；
+    2. 前端每轮都会把最近 N 条消息完整发上来，它才是抗刷新、抗重启的那份记录。
+    进程内记忆仍然保留，作为请求没带历史时的兜底（见 graph.resolve_history）。
+    """
+    items = list(data.messages or [])
+    # 最后一条就是本轮问题本身，不能混进历史，否则同一个问题会在提示词里出现两次
+    if items and items[-1].role == "user" and (items[-1].content or "").strip() == query:
+        items = items[:-1]
+
+    history = [
+        {"role": item.role, "content": (item.content or "").strip()}
+        for item in items
+        if item.role in ("user", "assistant") and (item.content or "").strip()
+    ]
+    # 空列表当作「没带历史」，让调用方回落到进程内记忆
+    return history[-MAX_HISTORY_MESSAGES:] or None
+
+
 async def stream_agent(
     db: Session, current_user: User, data: ChatRequest
 ) -> AsyncIterator[dict]:
@@ -59,7 +83,7 @@ async def stream_agent(
     事件类型（前端 Agent Trace Panel 依赖这套契约）：
       session    会话已建立，回传 conversation_id
       node       某个节点开始/结束（含耗时），驱动轨迹面板的进度
-      analysis   需求理解结果（意图、槽位、是否授权）
+      analysis   需求理解结果（已解析槽位、缺失项、是否授权）
       plan       任务计划（步骤列表）
       step       单步工具执行的状态流转
       reflection 反思判定（finish / replan）
@@ -77,7 +101,10 @@ async def stream_agent(
     yield {"type": "session", "conversation_id": conversation_id}
     yield {"type": "status", "message": "正在理解您的需求…"}
 
-    runner = workflow.WorkflowRunner(db, current_user, conversation_id, query)
+    history = _history_from_request(data, query)
+    runner = workflow.WorkflowRunner(
+        db, current_user, conversation_id, query, history=history
+    )
     try:
         async for event in runner.astream():
             yield event
@@ -93,7 +120,10 @@ def run_agent(db: Session, current_user: User, data: ChatRequest) -> str:
     query = _last_user_query(data)
     conversation_id = ensure_conversation_id(data)
 
-    runner = workflow.WorkflowRunner(db, current_user, conversation_id, query)
+    history = _history_from_request(data, query)
+    runner = workflow.WorkflowRunner(
+        db, current_user, conversation_id, query, history=history
+    )
     try:
         answer = asyncio.run(runner.ainvoke())
     except BusinessException:

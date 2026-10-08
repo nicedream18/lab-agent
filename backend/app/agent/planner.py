@@ -43,16 +43,60 @@ logger = logging.getLogger(__name__)
 if settings.LLM_FORCE_IPV4:
     prefer_ipv4(settings.LLM_BASE_URL)
 
-# 意图取值集合，和 prompts.ANALYZE_PROMPT 里保持一致
-VALID_INTENTS = {
-    "reserve_lab",
-    "query_lab",
-    "query_equipment",
-    "query_rules",
-    "query_my_reservation",
-    "cancel_reservation",
-    "other",
+# 槽位字段名 → 中文。
+# 槽位名（lab_name / date / start_time …）是**给机器看的契约**，出现在
+# JSON、日志和 SSE 事件里都没问题；但它绝不该出现在给用户看的句子里 ——
+# 用户不知道 "date" 是什么。所有面向用户的出口（兜底回复、提示词、
+# 执行轨迹）都必须先过 slot_label() 翻译，就像 tools.tool_label() 那样。
+# 前端 src/utils/agentTrace.js 里有一份同构的 SLOT_LABELS，改这里时记得同步。
+SLOT_LABELS = {
+    "lab_name": "实验室",
+    "equipment_name": "设备",
+    "date": "预约日期",
+    "start_time": "开始时间",
+    "end_time": "结束时间",
+    "duration_hours": "使用时长",
+    "keywords": "关键词",
 }
+
+# 追问缺失信息时给的例子。只说「请补充预约日期」用户还是不知道
+# 该用什么格式回答，直接把说法摆出来最省事。
+SLOT_HINTS = {
+    "lab_name": "比如「软件工程实验室」",
+    "equipment_name": "比如「示波器」",
+    "date": "比如「明天」或「10 月 9 日」",
+    "start_time": "比如「下午 2 点」",
+    "end_time": "比如「到 5 点」",
+    "duration_hours": "比如「约 3 小时」",
+    "keywords": "",
+}
+
+
+def slot_label(name: Any) -> str:
+    """把槽位字段名翻译成中文；认不出来的原样返回，不把信息丢掉。"""
+    key = str(name).strip()
+    return SLOT_LABELS.get(key, key)
+
+
+def describe_missing(missing: list | None) -> str:
+    """把缺失槽位列表拼成一句中文，带例子。
+
+    例：['date'] → 「预约日期（比如「明天」或「10 月 9 日」）」
+    """
+    parts: list[str] = []
+    for item in missing or []:
+        key = str(item).strip()
+        if not key:
+            continue
+        label = slot_label(key)
+        hint = SLOT_HINTS.get(key)
+        parts.append(f"{label}（{hint}）" if hint else label)
+    return "、".join(parts)
+
+
+def missing_labels(missing: list | None) -> list[str]:
+    """缺失槽位的中文标签列表，喂给提示词用（模型看到中文就不会原样复述英文键）。"""
+    return [slot_label(item) for item in (missing or []) if str(item).strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -362,7 +406,15 @@ def _slots_ready_for_booking(slots: dict) -> bool:
 
 
 def analyze(ctx: AgentContext, state: AgentState) -> dict:
-    """把自然语言解析成 intent + slots + authorized。"""
+    """把自然语言解析成 slots + missing_slots + authorized。
+
+    这里刻意**不产出意图**。意图分类是模型能力最不稳的一环，而它在规划提示词
+    里本来就是冗余的 —— 规划器拿到用户原话 + 槽位 + 缺失项，一样能挑出正确
+    的工具。少一个中间结论，就少一次「分类判错、后面全错」的机会。
+
+    留下来的三个产出都是任务状态而不是分类标签：用户说了什么、还缺什么、
+    能不能写库。前两个是事实，第三个是安全闸门。
+    """
     query = state.get("user_query") or ""
     today = state.get("today") or datetime.now().strftime("%Y-%m-%d")
     weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][
@@ -371,7 +423,7 @@ def analyze(ctx: AgentContext, state: AgentState) -> dict:
 
     if breaker_open(ctx):
         logger.info("模型熔断已开启，需求理解直接走规则兜底")
-        return _fallback_analyze(query, today)
+        return _fallback_analyze(query, today, state.get("history"))
 
     prompt = prompts.ANALYZE_PROMPT.format(
         today=today,
@@ -387,11 +439,7 @@ def analyze(ctx: AgentContext, state: AgentState) -> dict:
         # 这里刻意连 BusinessException 一起吞掉：一个 429 就整轮失败，
         # 在线下演示和线上都是不可接受的 —— 规则兜底至少能把主流程跑完。
         logger.warning("需求解析失败，启用规则兜底：%s", exc)
-        return _fallback_analyze(query, today)
-
-    intent = (data.get("intent") or "").strip()
-    if intent not in VALID_INTENTS:
-        intent = "other"
+        return _fallback_analyze(query, today, state.get("history"))
 
     slots = data.get("slots") or {}
     if not isinstance(slots, dict):
@@ -410,7 +458,6 @@ def analyze(ctx: AgentContext, state: AgentState) -> dict:
     # 两道校验仍然会挡住真正不该写的请求。
     if (
         not authorized
-        and intent == "reserve_lab"
         and _slots_ready_for_booking(slots)
         and explicit_booking_request(query)
     ):
@@ -421,7 +468,6 @@ def analyze(ctx: AgentContext, state: AgentState) -> dict:
         authorized = True
 
     return {
-        "intent": intent,
         "slots": slots,
         "missing_slots": [str(item) for item in missing],
         "authorized": authorized,
@@ -446,14 +492,97 @@ def _normalize_slots(slots: dict) -> dict:
     return cleaned
 
 
+# 中文数字：兜底要能听懂「下午两点」「上午十点半」这类最顺口的说法。
+_CN_DIGIT = {
+    "零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+    "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+}
+
+# 时段词决定「两点」到底是 2 点还是 14 点。
+_PERIOD_WORDS = "凌晨|早上|上午|中午|下午|傍晚|晚上"
+# 紧贴在时间点前面的时段词（「下午两点」里的那个“下午”）
+_PERIOD_BEFORE = re.compile(rf"({_PERIOD_WORDS})\s*$")
+# 整句里出现过的时段词：用来解释「下午2点到5点」这种只写了一次“下午”的写法
+_ANY_PERIOD = re.compile(rf"({_PERIOD_WORDS})")
+# 需要加 12 小时的时段；「中午一点」也是 13:00，一并算在这里
+_PERIOD_PM = ("下午", "晚上", "傍晚", "中午")
+
+_CN_NUMBER = r"[零一二两三四五六七八九十]{1,3}"
+_HOUR_PART = rf"(?:[0-9]{{1,2}}|{_CN_NUMBER})"
+# 分钟要么写成两位数字，要么必须带“分”字 —— 否则「2点到5点」里的 5
+# 会被当成「2点」的分钟数。
+_MINUTE_PART = rf"(?:[0-9]{{2}}|[0-9]{{1,2}}\s*分|{_CN_NUMBER}\s*分|半)"
+# 取槽位用的时间点。这里故意不认“时”：「2小时」是时长，不是两点。
+_TIME_TOKEN = re.compile(rf"({_HOUR_PART})\s*[:：点]\s*({_MINUTE_PART})?")
+
+
+def _cn_number(text: str) -> int | None:
+    """把 1~3 位中文数字转成整数：「两」=2、「十」=10、「十二」=12、「二十三」=23。"""
+    text = (text or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    if any(char not in _CN_DIGIT for char in text):
+        return None
+    if len(text) == 1:
+        return _CN_DIGIT[text]
+    if len(text) == 2:
+        if text[0] == "十":
+            return 10 + _CN_DIGIT[text[1]]
+        if text[1] == "十":
+            return _CN_DIGIT[text[0]] * 10
+        return None
+    if len(text) == 3 and text[1] == "十":
+        return _CN_DIGIT[text[0]] * 10 + _CN_DIGIT[text[2]]
+    return None
+
+
+def _minute_value(text: str | None) -> int:
+    """把分钟部分转成 0~59 的整数；认不出来就算整点。"""
+    text = (text or "").strip()
+    if not text:
+        return 0
+    if text == "半":
+        return 30
+    value = _cn_number(text.rstrip("分").strip())
+    return value if value is not None and 0 <= value <= 59 else 0
+
+
+def _extract_times(text: str) -> list[tuple[int, int]]:
+    """抠出这句话里的所有时间点，返回 [(时, 分)]。
+
+    阿拉伯数字和中文数字都要认：「14:30」「下午2点到5点」「下午两点」
+    「上午十点半」。兜底路径上用户最顺口的说法就是「明天下午两点」，
+    只认阿拉伯数字等于把最口语的一类表达整体丢掉，用户会觉得它答非所问。
+    """
+    found: list[tuple[int, int]] = []
+    for match in _TIME_TOKEN.finditer(text or ""):
+        hour = _cn_number(match.group(1))
+        if hour is None or not 0 <= hour <= 23:
+            continue
+        # 「下午2点到5点」只在开头写了一次“下午”，所以先看紧贴前面的时段词，
+        # 找不到再退回整句里出现过的那个。
+        period = _PERIOD_BEFORE.search(text[: match.start()]) or _ANY_PERIOD.search(text)
+        if period and period.group(1) in _PERIOD_PM and hour < 12:
+            hour += 12
+        found.append((hour, _minute_value(match.group(2))))
+    return found
+
+
 # 时间表达正则：抠实验室名之前要先把它抹掉。
 # 「下午2点到5点的计算机实验室」如果不先处理，正则会把“点”一样的
 # 汉字一起吃掉，抠出「午2点到5点的计算机」这种鬼东西。
 _TIME_NOISE = re.compile(
-    r"(上午|下午|中午|晚上|凌晨|明早|明晚)?\s*"
-    r"\d{1,2}\s*[:：点时]\s*(半|\d{1,2}\s*分?)?"
-    r"(\s*(到|至|~|—|-)\s*\d{1,2}\s*[:：点时]\s*(半|\d{1,2}\s*分?)?)?"
+    rf"(?:{_PERIOD_WORDS})?\s*{_HOUR_PART}\s*[:：点时]\s*{_MINUTE_PART}?"
+    rf"(?:\s*(?:到|至|~|—|-)\s*(?:{_PERIOD_WORDS})?\s*{_HOUR_PART}"
+    rf"\s*[:：点时]\s*{_MINUTE_PART}?)?"
 )
+
+# 相对日期词本身也算时间噪声，但不带钟点（「明天的计算机实验室」）。
+# 不能写进 _TIME_NOISE：那样会把时间表达中的钟点部分变成可选项，
+# 导致「下午两点的计算机实验室」里的“下午”被单独吃掉后剩下一个孤零零的“两”。
+_DAY_WORD_NOISE = re.compile(r"(今天|明天|后天|大后天)的?")
 
 # 抠出来的名字可能还带着助词、代词或动词，逐个剥掉。
 # 按长度倒序排列：否则“预约”会被“约”先匹配掉一半，剩下一个“预”字。
@@ -497,14 +626,36 @@ _LAB_LEAD_NOISE = tuple(
 )
 
 
+# 提取实验室名时的额外过滤。
+# 「现在有哪些开放的实验室？」里「实验室」前面整整 7 个字全是疑问词，正则会
+# 整段抠出来当实验室名。问句里提到实验室 ≠ 用户想约它 —— 这种名字一旦进槽位，
+# 会被后面的路由当成参数去查一个根本不存在的实验室。
+_BOGUS_LAB_MARKERS = (
+    "哪些",
+    "什么",
+    "多少",
+    "几个",
+    "有没有",
+    "是不是",
+    "开放",
+    "规则",
+    "安全",
+    "规范",
+)
+
+
 def _extract_lab_name(text: str) -> str | None:
     """从口语里抠出实验室名，例如「明天下午2点的计算机实验室」→ 计算机实验室。"""
     cleaned = _TIME_NOISE.sub(" ", text or "")
+    # 相对日期词要先摘掉，否则「明天的计算机实验室」会抠出「明天的计算机实验室」
+    cleaned = _DAY_WORD_NOISE.sub(" ", cleaned)
     match = re.search(r"([\u4e00-\u9fa5]{2,8})实验室", cleaned)
     if not match:
         return None
 
     name = match.group(1)
+    if any(marker in name for marker in _BOGUS_LAB_MARKERS):
+        return None
     changed = True
     while changed:
         changed = False
@@ -516,54 +667,93 @@ def _extract_lab_name(text: str) -> str | None:
     return f"{name}实验室" if len(name) >= 2 else None
 
 
-def _fallback_analyze(query: str, today: str) -> dict:
-    """规则兜底：模型不给力时，用关键词 + 正则硬解。
+def _extract_date(text: str, today: str) -> str | None:
+    """从口语里抠出日期，例如「明天」「后天」「10 月 9 日」→ YYYY-MM-DD。"""
+    base = datetime.strptime(today, "%Y-%m-%d")
+    if "后天" in text:
+        return (base + timedelta(days=2)).strftime("%Y-%m-%d")
+    if "明天" in text:
+        return (base + timedelta(days=1)).strftime("%Y-%m-%d")
+    if "今天" in text:
+        return today
+    matched = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", text)
+    if matched:
+        return (
+            f"{matched.group(1)}-{int(matched.group(2)):02d}-"
+            f"{int(matched.group(3)):02d}"
+        )
+    return None
+
+
+# 兜底解析能往回看几轮用户发言。3 轮足以覆盖「先报实验室 → 再补日期 → 再补时间」
+# 这种最常见的节奏，又不会把很久以前提过的实验室莫名其妙套到当下的问题上。
+_CARRY_OVER_TURNS = 3
+
+def _carry_over_slots(
+    slots: dict, history: list[dict] | None, today: str
+) -> list[str]:
+    """把前几轮已经交代过的关键信息接到本轮槽位上，返回沿用了哪些字段。
+
+    为什么必须有这一步：兜底解析只看本轮这一句话。用户先问
+    「帮我预约计算机实验室」，再补一句「明天下午两点」——这句话里根本没有
+    实验室名，兜底就会反过来追问「还需要你补充：实验室」，用户看到的结论是
+    「这东西失忆了」。而兜底恰恰是模型限流/熔断时用户最常遇到的路径。
+
+    只接实验室名和日期：它们是兜底判定 reserve_lab 必需的两项，而具体时段最容
+    易反复修改 —— 宁可多问一句，也不要拿旧时间真的下单。
+    """
+    if not history:
+        return []
+
+    user_texts = [
+        (item.get("content") or "").strip()
+        for item in history[-(_CARRY_OVER_TURNS * 2):]
+        if (item.get("role") or "") == "user"
+    ]
+    user_texts = [text for text in user_texts if text]
+    if not user_texts:
+        return []
+
+    carried: list[str] = []
+    for key in ("lab_name", "date"):
+        if slots.get(key):
+            continue
+        # 从最近的发言往前找：越近越可能是用户正在说的那件事
+        for text in reversed(user_texts):
+            if key == "lab_name":
+                value = _extract_lab_name(text)
+                if value and any(mark in value for mark in _BOGUS_LAB_MARKERS):
+                    value = None
+            else:
+                value = _extract_date(text, today)
+            if value:
+                slots[key] = value
+                carried.append(key)
+                break
+    return carried
+
+
+def _fallback_analyze(
+    query: str, today: str, history: list[dict] | None = None
+) -> dict:
+    """规则兜底：模型不给力时，用正则把用户这句话里的事实抠出来。
 
     写得“笨”一点没关系 —— 它的使命是在模型不可用时保证主流程跑得通。
+    它只回答「用户说了什么」（槽位）和两个由槽位直接推出的确定性结论
+    （还缺什么、能不能写库），**不猜「用户想干什么」**——「该调哪些工具」
+    属于规划环节的职责，在模型不可用时由 _fallback_plan 按槽位与授权兜底。
+    history 传进来是为了能承接上文（见 _carry_over_slots）。
     """
     text = query or ""
-    intent = "other"
-    if re.search(r"预约|预订|预定|约一下|帮我约|我要约", text):
-        intent = "reserve_lab"
-    elif re.search(r"我的预约|预约记录|查.*预约", text):
-        intent = "query_my_reservation"
-    elif re.search(r"取消", text):
-        intent = "cancel_reservation"
-    elif re.search(r"设备|仪器", text):
-        intent = "query_equipment"
-    elif re.search(r"规则|安全|规范|制度|注意", text):
-        intent = "query_rules"
-    elif re.search(r"实验室|开放", text):
-        intent = "query_lab"
 
     slots: dict[str, Any] = {}
 
     # 日期：今天 / 明天 / 后天 / 具体日期
-    base = datetime.strptime(today, "%Y-%m-%d")
-    if "后天" in text:
-        slots["date"] = (base + timedelta(days=2)).strftime("%Y-%m-%d")
-    elif "明天" in text:
-        slots["date"] = (base + timedelta(days=1)).strftime("%Y-%m-%d")
-    elif "今天" in text:
-        slots["date"] = today
-    else:
-        matched = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", text)
-        if matched:
-            slots["date"] = (
-                f"{matched.group(1)}-{int(matched.group(2)):02d}-"
-                f"{int(matched.group(3)):02d}"
-            )
-
-    # 时间：支持 "14:00-17:00"、"下午2点到5点"、"14点至17点"
-    times = re.findall(r"(\d{1,2})\s*[:：点]\s*(\d{2})?", text)
-    hours = []
-    for hour_text, minute_text in times:
-        hour = int(hour_text)
-        minute = int(minute_text) if minute_text else 0
-        # "下午2点" 要加 12
-        if hour <= 12 and re.search(r"下午|晚上", text) and hour < 12:
-            hour += 12
-        hours.append((hour, minute))
+    date_value = _extract_date(text, today)
+    if date_value:
+        slots["date"] = date_value
+    # 时间：支持 "14:00-17:00"、"下午2点到5点"、"下午两点"、"上午十点半"
+    hours = _extract_times(text)
     if hours:
         slots["start_time"] = f"{hours[0][0]:02d}:{hours[0][1]:02d}"
     if len(hours) > 1:
@@ -583,25 +773,38 @@ def _fallback_analyze(query: str, today: str) -> dict:
     if multiple:
         slots["duration_hours"] = int(multiple.group(1))
 
+    # 本轮没说、但前几轮已经交代过的关键信息，先接过来，再判断缺什么
+    carried = _carry_over_slots(slots, history, today)
+
+    # 还缺什么：只在用户字面上是在下单时才追问。
+    # 不能只看「槽位不全」—— 「计算机实验室的安全规范是什么」也会抽出一个
+    # 实验室名，那样回一句「还需要你补充：预约日期」就答非所问了。
     missing = []
-    if intent == "reserve_lab":
+    if explicit_booking_request(text):
         if not slots.get("lab_name"):
             missing.append("lab_name")
         if not slots.get("date"):
             missing.append("date")
 
+    # 能不能写库是确定性结论：字面上下单 + 三要素齐全。
+    # 与模型给出的 authorized 取并集（见 analyze 里的说明）。
     authorized = bool(
-        intent == "reserve_lab"
-        and _slots_ready_for_booking(slots)
-        and explicit_booking_request(text)
+        _slots_ready_for_booking(slots) and explicit_booking_request(text)
     )
 
+    reason = "（模型输出无法解析，已使用规则兜底）"
+    if carried:
+        # 降级要可见：让轨迹里能看出这条结论是“拼”出来的，而不是本轮真说了
+        reason = (
+            "（模型输出无法解析，已使用规则兜底；"
+            f"{'、'.join(slot_label(key) for key in carried)}沿用上文）"
+        )
+
     return {
-        "intent": intent,
         "slots": slots,
         "missing_slots": missing,
         "authorized": authorized,
-        "reason": "（模型输出无法解析，已使用规则兜底）",
+        "reason": reason,
     }
 
 
@@ -628,9 +831,10 @@ def make_plan(ctx: AgentContext, state: AgentState, extra: str = "") -> list[Pla
         tool_catalog=tool_catalog(),
         max_steps=MAX_PLAN_STEPS,
         query=state.get("user_query") or "",
-        intent=state.get("intent") or "other",
         slots=_slots_text(state.get("slots") or {}),
-        missing_slots=state.get("missing_slots") or [],
+        # 传中文标签而不是原始字段名：模型看到 "date" 会照抄进回复，
+        # 看到「预约日期」就只会用中文问。
+        missing_slots=missing_labels(state.get("missing_slots")) or "（无）",
         memory=state.get("memory_context") or "（暂无）",
         extra=extra,
     )
@@ -657,6 +861,7 @@ def _sanitize_plan(raw_plan: Any, state: AgentState) -> list[PlanStep]:
 
     authorized = bool(state.get("authorized"))
     plan: list[PlanStep] = []
+    dropped_write = False
 
     for index, item in enumerate(raw_plan, start=1):
         if not isinstance(item, dict):
@@ -678,6 +883,7 @@ def _sanitize_plan(raw_plan: Any, state: AgentState) -> list[PlanStep]:
                 authorized,
                 bool(state.get("read_only")),
             )
+            dropped_write = True
             continue
         args = item.get("args")
         args = args if isinstance(args, dict) else {}
@@ -696,6 +902,16 @@ def _sanitize_plan(raw_plan: Any, state: AgentState) -> list[PlanStep]:
         if len(plan) >= MAX_PLAN_STEPS:
             break
 
+    if dropped_write:
+        # 写库被摘掉之后，验证步骤就失去了意义，必须一并拿掉。
+        # verify_reservation 查的是「该用户在该实验室该日期的预约记录」，
+        # 它完全可能查到**上一轮就已存在**的历史记录；反思节点和最终回复
+        # 会据此宣布「预约已成功创建，reservation_id 为 12」—— 一个刚被系统
+        # 拦下的操作，被讲成了成功。宁可不验证，也不能说假话。
+        plan = [step for step in plan if step.get("tool") != "verify_reservation"]
+        for index, step in enumerate(plan, start=1):
+            step["id"] = index
+
     return _ensure_write_step(plan, state)
 
 
@@ -711,12 +927,12 @@ def _ensure_write_step(plan: list[PlanStep], state: AgentState) -> list[PlanStep
     接着 reflect 发现「验证不到记录」，判定 replan，重新规划又把这一步漏掉，
     如此往复直到耗尽重规划轮次。全程用户只拿到查询结果，预约从未发生。
 
-    「该不该有这一步」的依据是完全确定性的（意图 + 槽位 + 用户原话），
+    「该不该有这一步」的依据是完全确定性的（槽位 + 用户原话），
     不该赌模型记不记得，所以这里由系统补齐。
     写库的安全性仍然由 authorized 闸门保证 —— 它现在既听模型的，
     也听用户原话的确定性判断。
     """
-    if state.get("read_only") or state.get("intent") != "reserve_lab":
+    if state.get("read_only"):
         return plan
     if not state.get("authorized"):
         return plan
@@ -766,13 +982,20 @@ def _ensure_write_step(plan: list[PlanStep], state: AgentState) -> list[PlanStep
 
 
 def _fallback_plan(state: AgentState) -> list[PlanStep]:
-    """兜底计划：按意图给出确定性的标准流程。
+    """兜底计划：不依赖意图的确定性流程。
 
-    即使模型完全不可用，预约主流程依然能跑通 —— 只是少了「按需裁剪」的智能。
+    这里刻意不按「意图」分支 —— 意图分类本身就是模型能力最不稳的一环，
+    模型都不可用了，更没有理由拿它决定做什么。改用两个确定性事实选流程：
+      * 槽位 —— 用户说清了哪些信息
+      * authorized —— 本轮是不是字面上下单（见 explicit_booking_request）
+
+    代价是：模型不可用时，「查制度 / 查设备」这类非预约诉求会退化成
+    「先列出开放实验室」。这是有意的取舍 —— 宁可给一个真实但宽泛的答案，
+    也不要靠关键字去猜用户想干什么，猜错的代价比答得宽泛更大。
     """
-    intent = state.get("intent") or "other"
     slots = state.get("slots") or {}
     authorized = bool(state.get("authorized"))
+    ready = _slots_ready_for_booking(slots)
 
     def step(index: int, tool: str, reason: str, args: dict | None = None) -> PlanStep:
         return PlanStep(
@@ -802,7 +1025,9 @@ def _fallback_plan(state: AgentState) -> list[PlanStep]:
             )
         ]
 
-    if intent == "reserve_lab":
+    # 三要素齐全但本轮没字面下单（比如用户只是补了一句「明天下午两点」）：
+    # 只查不写，把可用性结论摆给用户，等他一句确认再落库。
+    if ready:
         plan = [
             step(
                 1,
@@ -822,80 +1047,36 @@ def _fallback_plan(state: AgentState) -> list[PlanStep]:
                 {"lab_name": slots.get("lab_name")},
             ),
         ]
-        if authorized:
-            plan.append(
-                step(
-                    3,
-                    "create_reservation",
-                    "时段可用且权限通过，创建预约",
-                    {
-                        "lab_name": slots.get("lab_name"),
-                        "date": slots.get("date"),
-                        "start_time": slots.get("start_time"),
-                        "end_time": slots.get("end_time"),
-                        "equipment_name": slots.get("equipment_name"),
-                    },
-                )
-            )
-            plan.append(
-                step(
-                    4,
-                    "verify_reservation",
-                    "回库核验预约是否真的创建成功",
-                    {
-                        "lab_name": slots.get("lab_name"),
-                        "date": slots.get("date"),
-                    },
-                )
-            )
-        return plan
-
-    if intent == "query_equipment":
-        return [
+        if not authorized:
+            return plan
+        plan.append(
             step(
-                1,
-                "list_lab_equipments",
-                "查询该实验室的设备清单",
+                3,
+                "create_reservation",
+                "时段可用且权限通过，创建预约",
                 {
                     "lab_name": slots.get("lab_name"),
-                    "keywords": slots.get("keywords"),
+                    "date": slots.get("date"),
+                    "start_time": slots.get("start_time"),
+                    "end_time": slots.get("end_time"),
+                    "equipment_name": slots.get("equipment_name"),
                 },
             )
-        ]
-
-    if intent == "query_rules":
-        return [
+        )
+        plan.append(
             step(
-                1,
-                "search_lab_docs",
-                "从知识库检索相关制度资料",
-                {"query": state.get("user_query") or ""},
+                4,
+                "verify_reservation",
+                "回库核验预约是否真的创建成功",
+                {
+                    "lab_name": slots.get("lab_name"),
+                    "date": slots.get("date"),
+                },
             )
-        ]
+        )
+        return plan
 
-    if intent == "query_lab":
-        return [
-            step(
-                1,
-                "list_open_labs",
-                "列出开放中的实验室",
-                {"keywords": slots.get("keywords") or slots.get("lab_name") or ""},
-            )
-        ]
-
-    if intent == "query_my_reservation":
-        return [
-            step(
-                1,
-                "list_open_labs",
-                "确认可预约范围",
-                {},
-            )
-        ]
-
-    if intent == "cancel_reservation":
-        return []
-
+    # 信息不全，或诉求压根不是预约：先把系统里有什么查清楚，再据实回答。
     return [
         step(
             1,
@@ -1029,7 +1210,7 @@ def should_replan(state: AgentState) -> str | None:
         return None
     if (state.get("replan_round") or 0) >= MAX_REPLAN_ROUNDS:
         return None
-    if state.get("intent") != "reserve_lab" or not state.get("authorized"):
+    if not state.get("authorized"):
         return None
 
     results = state.get("tool_results") or {}
@@ -1111,7 +1292,6 @@ def reflect(ctx: AgentContext, state: AgentState) -> dict:
 
     prompt = prompts.REFLECT_PROMPT.format(
         query=state.get("user_query") or "",
-        intent=state.get("intent") or "other",
         execution_log=render_execution_log(state),
         replan_round=state.get("replan_round") or 0,
     )
@@ -1148,6 +1328,9 @@ def build_respond_prompt(state: AgentState) -> str:
         reflection=state.get("reflection") or "（无）",
         memory=state.get("memory_context") or "（暂无）",
         history=_history_text(state.get("history")),
+        # 缺什么必须明确告诉模型，否则它只能泛泛地问「请补充信息」；
+        # 而且给的是中文描述，从源头杜绝它把 date 这类字段名写进回复。
+        missing_slots=describe_missing(state.get("missing_slots")) or "（无，信息已齐全）",
     )
 
 
@@ -1241,6 +1424,32 @@ async def stream_response_safe(
     return fallback
 
 
+def _error_is_pending_info(tool: str, outcome: dict, missing: list | None) -> bool:
+    """这次工具报错，是不是「用户还没说」造成的？
+
+    典型场景：用户只说「帮我约个实验室」，lab_name 还没问到，
+    query_lab_availability 就会报「缺少实验室名称，无法执行该操作」。
+    这不是系统故障，对用户也没有任何信息量 —— 用户本来就没说。
+    该说的是末尾那句追问，所以这类报错要静音，
+    否则用户会先看到一句像报错的文案，再看到真正该回答的问题。
+    """
+    if not missing:
+        # 槽位都齐了还报错，那就是真的出问题了，不能瞒。
+        return False
+    error = str(outcome.get("error") or "")
+    if not error:
+        return False
+
+    pending = {str(item).strip() for item in missing}
+    for arg in required_args(tool):
+        # 工具报错文案用的是中文（「缺少实验室名称」），但字段名本身
+        # 也可能出现在报错里，所以两边都查。
+        if arg in pending and (arg in error or slot_label(arg) in error):
+            return True
+    # 兜底：报错本身就是「缺参数」类的，而这一轮确实有槽位没问到
+    return "缺少" in error or "不能为空" in error or "必填" in error
+
+
 def _compose_fallback_reply(state: AgentState) -> str:
     """模型不可用时，用**真实执行结果**拼一条能看的回复。
 
@@ -1268,10 +1477,19 @@ def _compose_fallback_reply(state: AgentState) -> str:
 
     lines: list[str] = []
 
+    # 用户还没说清楚的信息。提前算出来是因为下面的文案要拿它判断
+    # 「这一次工具失败该不该向用户播报」。
+    missing = state.get("missing_slots") or []
+    missing_keys = [str(item) for item in missing]
+
     # 1. 先回答「能不能满足诉求」
-    if permission.get("ok") is False:
+    if permission.get("ok") is False and not _error_is_pending_info(
+        "check_user_permission", permission, missing_keys
+    ):
         lines.append(f"暂时没法帮你预约：{permission.get('error')}。")
-    if availability.get("ok") is False:
+    if availability.get("ok") is False and not _error_is_pending_info(
+        "query_lab_availability", availability, missing_keys
+    ):
         lines.append(f"查询实验室状态失败：{availability.get('error')}。")
     elif availability.get("lab_open") is False:
         lines.append(f"{lab_name}当前未开放，暂时不能预约。")
@@ -1316,11 +1534,16 @@ def _compose_fallback_reply(state: AgentState) -> str:
             continue
         if tool == "create_reservation" and conflict_explained:
             continue
+        # 同一类噪音，见 _error_is_pending_info 的说明
+        if _error_is_pending_info(tool, outcome, missing_keys):
+            continue
         lines.append(f"（{tool_label(tool)}这一步失败了：{outcome.get('error')}）")
 
-    missing = state.get("missing_slots") or []
     if missing:
-        lines.append(f"还需要你补充：{'、'.join(str(item) for item in missing)}。")
+        # 这里踩过一个坑：早先直接拼接原始字段名，模型熔断时用户会收到
+        # 一句「还需要你补充：date。」—— 丑，而且用户根本不认识 date。
+        # 兜底文案是模型挂了之后的最后一道门面，措辞必须跟模型正常时一致。
+        lines.append(f"还需要你补充：{describe_missing(missing)}。")
 
     # 5. 走到这里说明这一轮压根不是预约类需求（比如「你能做什么」），
     #    上面那套预约叙事一句都用不上。此时绝不能回一句
