@@ -11,14 +11,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 import time
 from datetime import datetime, timedelta
 from typing import Any, AsyncIterator, Callable
-
-import asyncio
 
 from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
@@ -231,6 +230,7 @@ def _record(ctx: AgentContext, ok: bool) -> None:
         ctx.llm_failures = 0
     else:
         ctx.llm_failures += 1
+
 
 _TRANSIENT_ERRORS = (
     "OpenAIRateLimitError",
@@ -494,8 +494,18 @@ def _normalize_slots(slots: dict) -> dict:
 
 # 中文数字：兜底要能听懂「下午两点」「上午十点半」这类最顺口的说法。
 _CN_DIGIT = {
-    "零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
-    "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+    "零": 0,
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+    "十": 10,
 }
 
 # 时段词决定「两点」到底是 2 点还是 14 点。
@@ -563,7 +573,9 @@ def _extract_times(text: str) -> list[tuple[int, int]]:
             continue
         # 「下午2点到5点」只在开头写了一次“下午”，所以先看紧贴前面的时段词，
         # 找不到再退回整句里出现过的那个。
-        period = _PERIOD_BEFORE.search(text[: match.start()]) or _ANY_PERIOD.search(text)
+        period = _PERIOD_BEFORE.search(text[: match.start()]) or _ANY_PERIOD.search(
+            text
+        )
         if period and period.group(1) in _PERIOD_PM and hour < 12:
             hour += 12
         found.append((hour, _minute_value(match.group(2))))
@@ -661,7 +673,7 @@ def _extract_lab_name(text: str) -> str | None:
         changed = False
         for noise in _LAB_LEAD_NOISE:
             if name.startswith(noise):
-                name = name[len(noise):]
+                name = name[len(noise) :]
                 changed = True
                 break
     return f"{name}实验室" if len(name) >= 2 else None
@@ -689,9 +701,8 @@ def _extract_date(text: str, today: str) -> str | None:
 # 这种最常见的节奏，又不会把很久以前提过的实验室莫名其妙套到当下的问题上。
 _CARRY_OVER_TURNS = 3
 
-def _carry_over_slots(
-    slots: dict, history: list[dict] | None, today: str
-) -> list[str]:
+
+def _carry_over_slots(slots: dict, history: list[dict] | None, today: str) -> list[str]:
     """把前几轮已经交代过的关键信息接到本轮槽位上，返回沿用了哪些字段。
 
     为什么必须有这一步：兜底解析只看本轮这一句话。用户先问
@@ -707,7 +718,7 @@ def _carry_over_slots(
 
     user_texts = [
         (item.get("content") or "").strip()
-        for item in history[-(_CARRY_OVER_TURNS * 2):]
+        for item in history[-(_CARRY_OVER_TURNS * 2) :]
         if (item.get("role") or "") == "user"
     ]
     user_texts = [text for text in user_texts if text]
@@ -872,9 +883,7 @@ def _sanitize_plan(raw_plan: Any, state: AgentState) -> list[PlanStep]:
             continue
         # 授权闸门 + 只读闸门：没拿到用户明确授权、或本轮是只读轮次，
         # 绝不允许出现写库操作。模型可以随便想，但执行队列由系统把关。
-        if tool == "create_reservation" and (
-            not authorized or state.get("read_only")
-        ):
+        if tool == "create_reservation" and (not authorized or state.get("read_only")):
             # 用 warning 而不是 info：这条日志意味着用户明确要求的预约
             # 很可能不会发生，是最需要被看见的一类降级，不能埋在 info 里。
             logger.warning(
@@ -969,7 +978,10 @@ def _ensure_write_step(plan: list[PlanStep], state: AgentState) -> list[PlanStep
     # 写库与验证是这一轮的核心，必须保留。
     while len(plan) > MAX_PLAN_STEPS:
         for index in range(len(plan) - 1, -1, -1):
-            if plan[index].get("tool") not in ("create_reservation", "verify_reservation"):
+            if plan[index].get("tool") not in (
+                "create_reservation",
+                "verify_reservation",
+            ):
                 plan.pop(index)
                 break
         else:
@@ -1266,9 +1278,7 @@ def render_execution_log(state: AgentState) -> str:
             lines.append(f"   目的：{step['reason']}")
         outcome = results.get(tool)
         if outcome is not None:
-            lines.append(
-                "   结果：" + json.dumps(outcome, ensure_ascii=False)[:800]
-            )
+            lines.append("   结果：" + json.dumps(outcome, ensure_ascii=False)[:800])
     return "\n".join(lines) if lines else "（没有执行任何步骤）"
 
 
@@ -1330,13 +1340,12 @@ def build_respond_prompt(state: AgentState) -> str:
         history=_history_text(state.get("history")),
         # 缺什么必须明确告诉模型，否则它只能泛泛地问「请补充信息」；
         # 而且给的是中文描述，从源头杜绝它把 date 这类字段名写进回复。
-        missing_slots=describe_missing(state.get("missing_slots")) or "（无，信息已齐全）",
+        missing_slots=describe_missing(state.get("missing_slots"))
+        or "（无，信息已齐全）",
     )
 
 
-async def _chain_first(
-    stream: AsyncIterator, first: Any
-) -> AsyncIterator:
+async def _chain_first(stream: AsyncIterator, first: Any) -> AsyncIterator:
     """把已经取出来的首包重新拼回流的头部。"""
     yield first
     async for chunk in stream:
@@ -1470,8 +1479,10 @@ def _compose_fallback_reply(state: AgentState) -> str:
 
     lab_name = slots.get("lab_name") or availability.get("lab_name") or "该实验室"
     date = slots.get("date") or availability.get("date") or ""
-    window = f"{slots.get('start_time') or requested.get('start_time') or ''}-" \
-             f"{slots.get('end_time') or requested.get('end_time') or ''}"
+    window = (
+        f"{slots.get('start_time') or requested.get('start_time') or ''}-"
+        f"{slots.get('end_time') or requested.get('end_time') or ''}"
+    )
     window = window.strip("-")
     when = f"{date} {window}".strip()
 
@@ -1502,15 +1513,16 @@ def _compose_fallback_reply(state: AgentState) -> str:
     # 2. 再给替代方案
     if alternatives.get("slots"):
         pretty = "、".join(
-            f"{item['start_time']}-{item['end_time']}"
-            for item in alternatives["slots"]
+            f"{item['start_time']}-{item['end_time']}" for item in alternatives["slots"]
         )
         lines.append(
             f"我查了{alternatives.get('lab_name') or lab_name}当天的其它空闲时段：{pretty}。"
         )
         lines.append("如果你可以改时间，告诉我选哪一段，我马上帮你提交预约。")
     elif alternatives.get("ok") and alternatives.get("has_slot") is False:
-        lines.append(f"{alternatives.get('date') or date} 当天{lab_name}已经排满了，换一天可能更合适。")
+        lines.append(
+            f"{alternatives.get('date') or date} 当天{lab_name}已经排满了，换一天可能更合适。"
+        )
 
     # 3. 成功的预约要把结果说清楚
     if created.get("ok"):
@@ -1572,7 +1584,9 @@ def _summarize_results(results: dict) -> list[str]:
 
     equipments = results.get("list_lab_equipments") or {}
     if equipments.get("ok") and equipments.get("equipments"):
-        names = "、".join(str(item.get("name", "")) for item in equipments["equipments"])
+        names = "、".join(
+            str(item.get("name", "")) for item in equipments["equipments"]
+        )
         lines.append(f"{equipments.get('lab_name')}的设备有：{names}。")
 
     docs = results.get("search_lab_docs") or {}

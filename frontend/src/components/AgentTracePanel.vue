@@ -50,7 +50,11 @@
           任务计划
           <em>第 {{ trace.planRound + 1 }} 轮</em>
         </div>
-        <div v-for="step in trace.plan" :key="`${trace.planRound}-${step.id}`" class="trace-plan-row">
+        <div
+          v-for="step in trace.plan"
+          :key="`${trace.planRound}-${step.id}`"
+          class="trace-plan-row"
+        >
           <b>{{ step.id }}</b>
           <div>
             <strong>{{ step.label }}</strong>
@@ -67,7 +71,8 @@
             {{ trace.analysis.authorized ? '是' : '否' }}
           </b>
           <template v-for="(value, key) in trace.analysis.slots" :key="key">
-            <span>{{ slotLabels[key] || key }}</span><b>{{ value }}</b>
+            <span>{{ slotLabels[key] || key }}</span
+            ><b>{{ value }}</b>
           </template>
         </div>
         <div v-if="trace.analysis.missing.length" class="trace-missing">
@@ -104,9 +109,13 @@
       </section>
 
       <section v-if="tools.length" class="trace-block">
-        <div class="trace-block-title">可用工具 <em>{{ tools.length }}</em></div>
+        <div class="trace-block-title">
+          可用工具 <em>{{ tools.length }}</em>
+        </div>
         <div class="trace-tools">
-          <span v-for="tool in tools" :key="tool.name" :title="tool.description">{{ tool.label }}</span>
+          <span v-for="tool in tools" :key="tool.name" :title="tool.description">{{
+            tool.label
+          }}</span>
         </div>
       </section>
     </div>
@@ -130,9 +139,7 @@ const slotLabels = SLOT_LABELS
 // 事件里带的是原始槽位名（lab_name / date …），那是前后端的内部契约；
 // 面板是给人看的，统一翻成中文，认不出来的键原样显示。
 const missingText = computed(() =>
-  (props.trace.analysis?.missing || [])
-    .map((key) => slotLabels[key] || key)
-    .join('、')
+  (props.trace.analysis?.missing || []).map((key) => slotLabels[key] || key).join('、')
 )
 
 const subtitle = computed(() => {

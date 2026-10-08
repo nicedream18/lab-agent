@@ -63,7 +63,11 @@ def _history_from_request(data: ChatRequest, query: str) -> list[dict] | None:
     """
     items = list(data.messages or [])
     # 最后一条就是本轮问题本身，不能混进历史，否则同一个问题会在提示词里出现两次
-    if items and items[-1].role == "user" and (items[-1].content or "").strip() == query:
+    if (
+        items
+        and items[-1].role == "user"
+        and (items[-1].content or "").strip() == query
+    ):
         items = items[:-1]
 
     history = [

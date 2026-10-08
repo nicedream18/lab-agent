@@ -35,7 +35,11 @@ logger = logging.getLogger(__name__)
 
 # 出现失败就跳过剩余步骤、直接进反思的工具。
 # 这几步失败了后面做了也没意义：实验室都查不到，创建预约必然失败。
-CRITICAL_TOOLS = {"query_lab_availability", "check_user_permission", "create_reservation"}
+CRITICAL_TOOLS = {
+    "query_lab_availability",
+    "check_user_permission",
+    "create_reservation",
+}
 
 # 图的最大超步数。按最坏情况估算：
 # 3 轮（初次 + 2 次重规划）×（2 编排 + 6×2 执行）≈ 42，留一倍余量。
@@ -61,7 +65,9 @@ def _bind_writer(ctx: AgentContext) -> None:
 def node_analyze(ctx: AgentContext):
     def run(state: AgentState) -> dict:
         _bind_writer(ctx)
-        with trace_node(ctx, "analyze", input_text=state.get("user_query") or "") as box:
+        with trace_node(
+            ctx, "analyze", input_text=state.get("user_query") or ""
+        ) as box:
             result = planner.analyze(ctx, state)
             # 轨迹是给人看的，同样不能出现裸字段名
             box["output"] = (
@@ -198,9 +204,7 @@ def node_execute(ctx: AgentContext):
         results = dict(state.get("tool_results") or {})
         observations = list(state.get("observations") or [])
 
-        with trace_node(
-            ctx, "execute", input_text=f"{tool_name}({args})"
-        ) as box:
+        with trace_node(ctx, "execute", input_text=f"{tool_name}({args})") as box:
             result = tools.run_tool(ctx, tool_name, args)
             results[tool_name] = result
 
@@ -322,7 +326,10 @@ def node_reflect(ctx: AgentContext):
 def node_respond(ctx: AgentContext):
     async def run(state: AgentState) -> dict:
         _bind_writer(ctx)
-        with trace_node(ctx, "respond", input_text=state.get("reflection") or "") as box:
+        with trace_node(
+            ctx, "respond", input_text=state.get("reflection") or ""
+        ) as box:
+
             def emit_token(text: str) -> None:
                 ctx.emit({"type": "token", "content": text})
 
@@ -394,9 +401,7 @@ def build_graph(ctx: AgentContext):
     return graph.compile()
 
 
-def _initial_state(
-    ctx: AgentContext, query: str, history: list[dict]
-) -> AgentState:
+def _initial_state(ctx: AgentContext, query: str, history: list[dict]) -> AgentState:
     """构造初始状态。
 
     memory_context 在这里就读出来，而不是在 respond 节点里读：
@@ -426,9 +431,7 @@ def _initial_state(
     )
 
 
-def resolve_history(
-    conversation_id: str, history: list[dict] | None
-) -> list[dict]:
+def resolve_history(conversation_id: str, history: list[dict] | None) -> list[dict]:
     """决定这一轮用哪份对话历史。
 
     调用方（前端）带上来的历史优先：它是抗刷新、抗重启的那一份记录。
