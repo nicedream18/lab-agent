@@ -9,7 +9,10 @@
 新建表时也不用再去追调用链。
 """
 
+from app.models.agent_tool_execution import AgentToolExecution
 from app.models.agent_trace import AgentTrace
+from app.models.ai_conversation import AiConversation
+from app.models.ai_message import AiMessage
 from app.models.equipment import Equipment
 from app.models.lab import Lab
 from app.models.reservation import Reservation
@@ -17,7 +20,10 @@ from app.models.user import User
 from app.models.user_memory import UserMemory
 
 __all__ = [
+    "AgentToolExecution",
     "AgentTrace",
+    "AiConversation",
+    "AiMessage",
     "Equipment",
     "Lab",
     "Reservation",

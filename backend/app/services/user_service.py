@@ -6,7 +6,7 @@ from app.common.exceptions import BusinessException
 from app.common.response import PageResponse
 from app.models.user import User
 from app.schemas.password import PasswordUpdateRequest
-from app.schemas.user import UserResponse, UserUpdateRequest
+from app.schemas.user import UserCreateRequest, UserResponse, UserUpdateRequest
 from app.utils.password import hash_password, verify_password
 
 
@@ -35,7 +35,9 @@ def update_user_password(db: Session, user: User, data: PasswordUpdateRequest):
     db.commit()
 
 
-def get_user_page_list(db: Session, page: int, page_size: int, keyword: str = None):
+def get_user_page_list(
+    db: Session, page: int, page_size: int, keyword: str | None = None
+):
     """获取用户分页列表"""
     query = db.query(User)
     if keyword:
@@ -54,7 +56,7 @@ def get_user_page_list(db: Session, page: int, page_size: int, keyword: str = No
     )
 
 
-def create_user(db: Session, data: UserUpdateRequest):
+def create_user(db: Session, data: UserCreateRequest):
     """创建用户"""
     # 检查用户名是否已存在
     existing_user = db.query(User).filter(User.username == data.username).first()

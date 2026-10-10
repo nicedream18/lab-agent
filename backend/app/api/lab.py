@@ -17,7 +17,7 @@ def get_lab_list(
     page_size: int = 10,
     keywords: str | None = None,
     status: int | None = None,
-    current_user: User = Depends(get_current_user),
+    _: User = Depends(get_current_user),  # 参数仅为触发鉴权
     db: Session = Depends(get_db),
 ):
     res = lab_service.get_lab_page_list(db, page, page_size, keywords, status)
@@ -27,7 +27,7 @@ def get_lab_list(
 @router.post("")
 def create_lab(
     data: LabCreateRequest,
-    current_user: User = Depends(get_current_admin),
+    _: User = Depends(get_current_admin),  # 参数仅为触发鉴权
     db: Session = Depends(get_db),
 ):
     res = lab_service.create_lab(db, data)
@@ -38,7 +38,7 @@ def create_lab(
 def update_lab(
     lab_id: int,
     data: LabUpdateRequest,
-    current_user: User = Depends(get_current_admin),
+    _: User = Depends(get_current_admin),  # 参数仅为触发鉴权
     db: Session = Depends(get_db),
 ):
     res = lab_service.update_lab(db, lab_id, data)
@@ -48,7 +48,7 @@ def update_lab(
 @router.get("/{lab_id}")
 def get_lab(
     lab_id: int,
-    current_user: User = Depends(get_current_user),
+    _: User = Depends(get_current_user),  # 参数仅为触发鉴权
     db: Session = Depends(get_db),
 ):
     res = lab_service.get_lab(db, lab_id)
@@ -58,7 +58,7 @@ def get_lab(
 @router.delete("/{lab_id}")
 def delete_lab(
     lab_id: int,
-    current_user: User = Depends(get_current_admin),
+    _: User = Depends(get_current_admin),  # 参数仅为触发鉴权
     db: Session = Depends(get_db),
 ):
     lab_service.delete_lab(db, lab_id)

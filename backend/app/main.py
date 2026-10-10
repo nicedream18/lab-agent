@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import UPLOAD_DIR, settings
 from app.database import Base, engine
-from app.services import kb_service, reservation_service
+from app.services import conversation_service, kb_service, reservation_service
 
 # 必须配一次根 logger，否则 logger.info 会被静默丢弃
 # （root logger 默认级别是 WARNING，只有 error/exception 才打得出来）。
@@ -51,7 +51,9 @@ def _log_outbound_status() -> None:
     from app.utils import net
 
     if not settings.LLM_FORCE_IPV4:
-        logger.info("出网自检：LLM_FORCE_IPV4=false，不做 IPv4 强制（如需规避 AAAA 故障请设 true）")
+        logger.info(
+            "出网自检：LLM_FORCE_IPV4=false，不做 IPv4 强制（如需规避 AAAA 故障请设 true）"
+        )
         return
 
     loop = asyncio.get_running_loop()
@@ -72,12 +74,17 @@ def _log_outbound_status() -> None:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_: FastAPI):
     _log_outbound_status()
 
     task = asyncio.create_task(
         reservation_service.run_expire_scan()
     )  # 启动项目开启异步的扫描任务
+
+    # 历史会话保留期清理：每小时一次，把超过 30 天的聊天记录物理删除。
+    # 为什么不只靠「写入时顺手清」：用户连着一个月不聊天，写路径就不会被触发，
+    # 过期数据会一直躺在库里 —— 保留期承诺必须由后台兜底才算数。
+    cleanup_task = asyncio.create_task(conversation_service.run_cleanup_scan())
 
     # 向量库预热：模型加载 + 首次检索约 10s，交给后台线程，别落在第一个用户请求上。
     #
@@ -106,6 +113,7 @@ async def lifespan(app: FastAPI):
     yield
 
     task.cancel()  # 关闭项目同时取消异步任务
+    cleanup_task.cancel()
     # 注意 to_thread 跑在线程里，cancel 只能取消「等待」这个动作，
     # 已经进到线程里的模型加载是停不下来的，进程退出时它会自然结束。
     if warmup_task is not None:

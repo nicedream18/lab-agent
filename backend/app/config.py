@@ -45,7 +45,10 @@ class Settings(BaseSettings):
     )
 
 
-settings = Settings()
+# DATABASE_URL / JWT_SECRET_KEY / LLM_API_KEY / LLM_BASE_URL / LLM_MODEL 写了
+# 必填但没给默认值，Pyright 会按「构造参数必填」来要求；实际取值来自上面
+# model_config 里声明的 .env，属于 pydantic-settings 的已知类型局限，显式忽略。
+settings = Settings()  # pyright: ignore[reportCallIssue]
 
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
 UPLOAD_DIR = BASE_DIR / "uploads"

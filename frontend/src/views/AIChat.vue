@@ -1,5 +1,5 @@
 <template>
-  <div class="workspace-page ai-page">
+  <div class="workspace-page ai-page" :class="{ 'ai-page--history': historyOpen }">
     <div class="page-heading ai-page-heading">
       <div>
         <div class="page-kicker">LAB ASSISTANT</div>
@@ -8,6 +8,44 @@
       </div>
       <div class="ai-availability"><span></span> 智能服务已连接</div>
     </div>
+
+    <aside v-if="historyOpen" class="history-panel">
+      <div class="history-head">
+        <strong>历史会话</strong>
+        <span>最近 30 天</span>
+      </div>
+      <p v-if="historyLoading" class="history-note">正在加载…</p>
+      <p v-else-if="!historyList.length" class="history-note">
+        还没有历史会话。聊过的内容会保留一个月，方便你随时翻回来接着聊。
+      </p>
+      <ul v-else class="history-list">
+        <li
+          v-for="item in historyList"
+          :key="item.conversation_id"
+          class="history-item"
+          :class="{ 'history-item--active': item.conversation_id === conversationId }"
+        >
+          <button type="button" class="history-item-main" @click="openConversation(item)">
+            <span class="history-item-title" :title="item.title || '未命名会话'">
+              {{ item.title || '未命名会话' }}
+            </span>
+            <span class="history-item-meta">
+              {{ formatHistoryTime(item.last_time) }} · {{ item.message_count }} 条消息
+            </span>
+          </button>
+          <el-button
+            class="history-item-remove"
+            link
+            size="small"
+            title="删除该会话"
+            aria-label="删除该会话"
+            @click.stop="removeConversation(item)"
+          >
+            <el-icon><Delete /></el-icon>
+          </el-button>
+        </li>
+      </ul>
+    </aside>
 
     <section class="conversation-panel">
       <div class="conversation-toolbar">
@@ -21,14 +59,18 @@
           </div>
         </div>
         <div class="conversation-tools">
+          <el-button link size="small" @click="historyOpen = !historyOpen">
+            {{ historyOpen ? '收起历史' : '历史会话' }}
+          </el-button>
           <el-tag effect="plain" type="success" size="small">流式对话</el-tag>
           <el-button
             link
             size="small"
+            title="当前对话会留在「历史会话」里，随时可以回去接着聊"
             :disabled="loading || messages.length <= 1"
-            @click="handleClear"
+            @click="handleNewConversation"
           >
-            清空对话
+            新对话
           </el-button>
         </div>
       </div>
@@ -102,7 +144,13 @@
 
 <script setup>
 import { chatStreamApi } from '@/api/ai'
-import { getAgentMemoryApi, getAgentToolsApi } from '@/api/agent'
+import {
+  deleteAgentConversationApi,
+  getAgentConversationApi,
+  getAgentConversationsApi,
+  getAgentMemoryApi,
+  getAgentToolsApi
+} from '@/api/agent'
 import {
   applyAgentEvent,
   createTraceState,
@@ -126,13 +174,13 @@ marked.setOptions({ breaks: true }) // 把 \n 转换成 <br>
 const MAX_HISTORY = 20
 
 const GREETING =
-  '你好，我是实验室预约助手。我背后是一条 Agent 工作流：先理解你的需求，再拆解成任务、逐个调用业务工具，最后自我校验。右侧会实时展示我的“思考轨迹”。'
+  '你好，我是实验室预约助手。我背后是一条 Agent 工作流：先理解你的需求，需要的时候会把任务拆解成几步，再由模型自己决定调用哪些业务工具。右侧会实时展示我的“思考轨迹”。'
 
 // 上一条提问还没得到回答就刷新了。不能就这么把问题悬在那儿 ——
 // 用户会以为助手还在想，所以补一句说清楚发生了什么。
 const INTERRUPT_HINT = '（上一条提问的回答被页面刷新打断了，重新发送一次就好。）'
 
-// 每次都新建数组：直接复用同一个对象会在「清空对话」时被引用共享串味
+// 每次都新建数组：直接复用同一个对象会在重开新对话时被引用共享串味
 const createMessages = () => [{ role: 'assistant', content: GREETING }]
 
 const messages = ref(createMessages())
@@ -143,6 +191,13 @@ const listRef = ref()
 // 会话 id：由后端下发，多轮对话靠它串成同一条会话，
 // 右侧面板的「历史轨迹」和后端长期记忆都依赖它。
 const conversationId = ref('')
+
+// 历史会话侧栏（最近 30 天，后端保留）。
+// 不再只靠 localStorage 存「最后一次」—— 那样一开新对话，
+// 上一次聊过的内容就永久没了，而用户想要的恰恰是「翻回去接着聊」。
+const historyOpen = ref(false)
+const historyLoading = ref(false)
+const historyList = ref([])
 
 // Agent 执行轨迹。事件折叠逻辑全部在 utils/agentTrace.js 里，
 // 这里只负责「收到事件 → 更新状态」，保持视图层干净。
@@ -186,6 +241,157 @@ const loadTools = async () => {
   } catch {
     agentTools.value = []
   }
+}
+
+/**
+ * 拉取最近 30 天的历史会话列表（历史会话是辅助能力，失败就静默降级成空列表）。
+ *
+ * 返回值区分「真的没有会话」和「列表没拉到」：调用方要据此决定
+ * 能不能下「这条已保存」的结论 —— 拉失败时什么都不知道，不能说成已保存。
+ */
+const loadHistory = async () => {
+  historyLoading.value = true
+  try {
+    const res = await getAgentConversationsApi()
+    historyList.value = Array.isArray(res.data) ? res.data : []
+    return true
+  } catch {
+    historyList.value = []
+    return false
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+const pad2 = (value) => String(value).padStart(2, '0')
+
+/**
+ * 历史列表里的时间：近两天给出时分，一周内给「几天前」，更早给日期。
+ * 保留期只有一个月，所以年份只在跨年那条兜底分支里才出现。
+ */
+const formatHistoryTime = (value) => {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+
+  const clock = `${pad2(date.getHours())}:${pad2(date.getMinutes())}`
+  const startOfDay = (item) =>
+    new Date(item.getFullYear(), item.getMonth(), item.getDate()).getTime()
+  const days = Math.round((startOfDay(new Date()) - startOfDay(date)) / 86400000)
+
+  if (days <= 0) return `今天 ${clock}`
+  if (days === 1) return `昨天 ${clock}`
+  if (days < 7) return `${days} 天前`
+  const monthDay = `${date.getMonth() + 1} 月 ${date.getDate()} 日`
+  return date.getFullYear() === new Date().getFullYear()
+    ? monthDay
+    : `${date.getFullYear()} 年 ${monthDay}`
+}
+
+/**
+ * 打开一条历史会话：把消息铺回对话区，并把 conversation_id 接上。
+ *
+ * 必须接上 conversation_id，不然下一句话会被后端当成一条**全新**会话，
+ * 多轮上下文和「上一轮这单已经下过了」这类判断全部断掉 ——
+ * 表现就是「我明明接着上次在说，助手却像第一次听见」。
+ *
+ * 刻意不恢复右侧执行轨迹：那块面板画的是**这一次**运行的实时进度，
+ * 历史上的节点此刻并没有在跑，硬铺回来只会让人以为 Agent 又在干活。
+ */
+const openConversation = async (item) => {
+  if (!item?.conversation_id) return
+  if (loading.value) {
+    ElMessage.warning('请等当前回答结束再切换会话')
+    return
+  }
+  // 已经在这条会话里就不再重拉：点自己的高亮项不该把正在滚动的视图弹回顶部
+  if (item.conversation_id === conversationId.value && messages.value.length > 1) return
+
+  try {
+    const res = await getAgentConversationApi(item.conversation_id)
+    if (res.code !== 200) {
+      // 多半是这条会话刚被清掉/过期了。错误提示拦截器已经弹过，这里只把列表刷准。
+      loadHistory()
+      return
+    }
+
+    const payload = res.data || {}
+    const restored = (Array.isArray(payload.messages) ? payload.messages : [])
+      .filter(
+        (msg) =>
+          msg &&
+          (msg.role === 'user' || msg.role === 'assistant') &&
+          String(msg.content || '').trim()
+      )
+      .map((msg) => ({ role: msg.role, content: msg.content }))
+
+    if (!restored.length) {
+      ElMessage.warning('这条会话没有可显示的内容')
+      return
+    }
+
+    messages.value = restored
+    conversationId.value = item.conversation_id
+    Object.assign(trace, createTraceState())
+    persistChat()
+    scrollToBottom()
+  } catch (error) {
+    // 网络异常等硬错误：让用户知道这次点击没生效，而不是默默什么都不动
+    ElMessage.error(error?.message || '打开历史会话失败')
+  }
+}
+
+/**
+ * 删除一条历史会话。
+ *
+ * 当前正在聊的这条要单独确认：它是用户眼前的内容，
+ * 列表里手滑点掉一条旧会话无所谓，把正在进行的对话删掉则完全是另一回事。
+ */
+const removeConversation = async (item) => {
+  if (!item?.conversation_id) return
+  if (loading.value) {
+    ElMessage.warning('请等当前回答结束再操作')
+    return
+  }
+
+  const isCurrent = item.conversation_id === conversationId.value
+  try {
+    await ElMessageBox.confirm(
+      isCurrent
+        ? '这是你当前正在进行的对话，删除后无法恢复，确定吗？'
+        : '删除后该会话的聊天记录将无法恢复，确定继续吗？',
+      '删除会话',
+      {
+        type: 'warning',
+        confirmButtonText: '删除',
+        cancelButtonText: '取消'
+      }
+    )
+  } catch {
+    // 点「取消」会 reject，必须接住，否则是个 unhandled rejection
+    return
+  }
+
+  try {
+    await deleteAgentConversationApi(item.conversation_id)
+    ElMessage.success('已删除该会话')
+    if (isCurrent) {
+      // 后台的记录已经没了，本地这份留着只会「看着还在、其实已经没了」——
+      // 下次刷新还是空的。所以一起清掉，并回到一条全新对话。
+      resetConversation()
+    }
+    loadHistory()
+  } catch {
+    // 删除失败的具体原因由响应拦截器提示，这里不再重复弹一条
+  }
+}
+
+/** 把界面重置成一条全新对话（本地留档一并清掉） */
+const resetConversation = () => {
+  messages.value = createMessages()
+  conversationId.value = ''
+  Object.assign(trace, createTraceState())
+  clearChat(cacheUserId)
 }
 
 /**
@@ -237,27 +443,55 @@ const handleBeforeUnload = () => {
   persistChat()
 }
 
-const handleClear = () => {
-  ElMessageBox.confirm('清空后本次对话记录将无法恢复，确定继续吗？', '清空对话', {
-    type: 'warning',
-    confirmButtonText: '清空',
-    cancelButtonText: '取消'
-  })
-    .then(() => {
-      messages.value = createMessages()
-      conversationId.value = ''
-      Object.assign(trace, createTraceState())
-      clearChat(cacheUserId)
-      ElMessage.success('已清空对话')
-    })
-    // 点「取消」会 reject，必须接住，否则是个 unhandled rejection
-    .catch(() => {})
+/**
+ * 「新对话」：把当前这条**留在历史会话里**，然后开一条全新的。
+ *
+ * 这里刻意**不删**服务端记录。后端在每一轮答完时就已经落库了
+ * （见 conversation_service.record_turn），所以「保存」这件事其实只是
+ * 「别把它删掉 + 把列表刷准」。想删某一条，用列表里那个删除按钮。
+ *
+ * 刷新列表顺便回答一个更要紧的问题：**它到底在不在**。
+ * 如果整轮都撞上限流/报错，后端一轮都没落，那这条压根不存在 ——
+ * 这时候不能说「已保存」，那是在骗用户。
+ */
+const handleNewConversation = async () => {
+  if (loading.value) {
+    ElMessage.warning('请等当前回答结束再开新对话')
+    return
+  }
+
+  const current = conversationId.value
+  const hadContent = messages.value.length > 1
+
+  resetConversation()
+  if (!hadContent) return
+
+  const loaded = await loadHistory()
+  const listed =
+    loaded && !!current && historyList.value.some((item) => item.conversation_id === current)
+
+  // 让「保存到哪去了」看得见：面板收着的话把它展开
+  historyOpen.value = true
+
+  if (listed) {
+    ElMessage.success('已保存到历史会话，开始新对话')
+  } else if (loaded) {
+    ElMessage.warning('已开始新对话，但这次对话没有产生可保存的记录')
+  } else {
+    // 列表都没拉到，存没存下来并不知道 —— 不下结论
+    ElMessage.info('已开始新对话')
+  }
 }
 
 onMounted(() => {
   restoreChat()
   loadMemory()
   loadTools()
+  // 有历史就默认展开侧栏 —— 「能翻回上一次的对话」只有看见才会被用上。
+  // 没历史就一直显示引导语（空列表本身也是一句说明）。
+  loadHistory().then(() => {
+    if (historyList.value.length) historyOpen.value = true
+  })
   // 关键：流式回答跑到一半时刷新，并不会走 handleSend 的 finally，
   // 只有 beforeunload 能把这半截内容存下来。
   window.addEventListener('beforeunload', handleBeforeUnload)
@@ -320,6 +554,10 @@ const handleSend = async () => {
           assistant.status = ''
           if (!assistant.content && !leaving) assistant.content = evt.message || '请求失败'
           if (!leaving) ElMessage.error(evt.message || '请求失败')
+        } else if (evt.type === 'reset') {
+          // 模型先说了句铺垫又去调工具 —— 那段文字不是答案（它还没看到工具结果），
+          // 后端会为这种情况发一条 reset，这里把已经显示出来的抹掉。
+          assistant.content = ''
         } else if (evt.type === 'status') {
           assistant.status = evt.message || '正在思考…'
         } else if (hint) {
@@ -351,6 +589,9 @@ const handleSend = async () => {
     if (trace.toolCount) loadMemory()
     scrollToBottom()
     persistChat()
+    // 这一轮刚写进服务端留档，侧栏要跟着更新（标题、条数、活跃时间都会变）。
+    // 侧栏关着就不用白跑一趟。
+    if (historyOpen.value) loadHistory()
   }
 }
 
@@ -392,6 +633,132 @@ const parseMarkdown = (text) => {
 .ai-page-heading {
   align-items: center;
   grid-column: 1 / -1;
+}
+
+/* 展开「历史会话」时的三栏：会话列表 | 对话 | 执行轨迹。
+   只有列表宽度是固定值，对话列吃掉剩下的全部空间 —— 辅助面板不该把主角挤窄。
+   用 --history 修饰类而不是直接改 .ai-page：列表收起时列数必须回到 2，
+   否则被挤到第三行的轨迹面板会掉到对话下方去。
+
+   注意这个三栏形态只在**很宽**的窗口下成立，见下面 1500px 的断点。
+   这里不能用「窗口宽度够不够」去估算可用空间：左侧导航栏会吃掉 320px，
+   1199px 的窗口留给内容的其实只有 879px，再切成三栏对话列就只剩 275px 了。 */
+.ai-page--history {
+  grid-template-columns: 240px minmax(0, 1fr) 336px;
+}
+
+.history-panel {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--app-line);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(26, 54, 39, 0.035);
+}
+
+.history-head {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--app-line);
+}
+
+.history-head strong {
+  color: var(--app-ink);
+  font-size: 13px;
+}
+
+.history-head span {
+  color: var(--app-muted);
+  font-size: 11px;
+}
+
+.history-note {
+  margin: 0;
+  padding: 14px;
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.history-list {
+  /* 列表自己滚动，只占网格行给的高度，绝不反过来把面板撑高 */
+  min-height: 0;
+  flex: 1;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 9px;
+}
+
+.history-item:hover {
+  background: #f4f8f5;
+}
+
+.history-item--active {
+  background: #edf5ef;
+}
+
+/* 用原生 button 承载「切换会话」这件事：Tab 能走进去、回车能触发，
+   键盘可达不该是额外成本。div + @click 会让键盘用户彻底够不着。 */
+.history-item-main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  padding: 9px 10px;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+}
+
+.history-item-main:focus-visible {
+  outline: 2px solid var(--app-green);
+  outline-offset: -2px;
+  border-radius: 9px;
+}
+
+.history-item-title {
+  overflow: hidden;
+  color: var(--app-ink);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-item-main:hover .history-item-title,
+.history-item--active .history-item-title {
+  color: var(--app-green);
+}
+
+.history-item-meta {
+  color: var(--app-muted);
+  font-size: 11px;
+}
+
+.history-item-remove {
+  flex: 0 0 auto;
+  margin-right: 6px;
+  color: #b3bdb6;
+}
+
+.history-item-remove:hover {
+  color: #d9534f;
 }
 
 .ai-availability {
@@ -603,14 +970,60 @@ const parseMarkdown = (text) => {
   font-size: 10px;
 }
 
+@media (max-width: 1500px) {
+  /* 三栏塞不下时的退路：列表横过来，占对话上方一整行。
+     为什么不让它继续当一列：切成三栏后对话列只剩两三百像素，
+     消息气泡一行放不下几个字，得不偿失。
+     为什么是「整行」而不是又压成一条窄列：横排卡片每个 186px，
+     标题还能看全，滑一下就能翻到一个月前的会话。
+
+     grid-row 不用写：列表带了 grid-column: 1 / -1（占满一行），
+     自动排布就会把它推到第 2 行，对话和轨迹顺着落到第 3 行。 */
+  .ai-page--history {
+    grid-template-columns: minmax(0, 1fr) 336px;
+    grid-template-rows: auto auto minmax(0, 1fr);
+    /* 横条会吃掉一百多像素，窗口又矮的时候对话区会被压扁到不可用，
+       不如让整页滚动。 */
+    min-height: 600px;
+  }
+
+  .history-panel {
+    grid-column: 1 / -1;
+  }
+
+  .history-list {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .history-item {
+    flex: 0 0 200px;
+  }
+}
+
 @media (max-width: 1120px) {
   /* 窄屏放不下两栏：轨迹面板移到对话下方。
      堆叠布局下两个面板各占一个固定行高，内部照旧滚动，
      整个 .ai-page 随内容变高、交给页面滚动。 */
-  .ai-page {
+  .ai-page,
+  .ai-page--history {
     height: auto;
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(420px, 58vh) minmax(360px, 52vh);
+  }
+
+  .ai-page--history {
+    /* 历史列表在单列堆叠下也占一整行，多出来的就是这一行。
+       上面 1500px 断点设的 min-height 在这里反而会平白多出滚动条，撤掉。 */
+    grid-template-rows:
+      auto
+      auto
+      minmax(420px, 58vh)
+      minmax(360px, 52vh);
+    min-height: 0;
   }
 }
 

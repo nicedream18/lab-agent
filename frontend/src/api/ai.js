@@ -1,15 +1,4 @@
-import request from '@/utils/request'
 import { getToken } from '@/utils/auth'
-
-// AI 问答：模型响应可能超过默认的 5 秒，单独放宽到 60 秒
-export function chatApi(data) {
-  return request({
-    url: '/api/ai/chat',
-    method: 'post',
-    data,
-    timeout: 60000
-  })
-}
 
 /**
  * SSE 流式对话。每收到一条 data 事件就调用一次 onEvent。

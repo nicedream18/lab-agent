@@ -223,7 +223,11 @@ def list_busy_slots(
         query = query.filter(Reservation.equipment_id.is_(None))
 
     return [
-        {"start_time": item.start_time, "end_time": item.end_time, "status": item.status}
+        {
+            "start_time": item.start_time,
+            "end_time": item.end_time,
+            "status": item.status,
+        }
         for item in query.order_by(Reservation.start_time).all()
     ]
 

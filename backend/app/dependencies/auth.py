@@ -1,4 +1,3 @@
-
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
@@ -29,6 +28,12 @@ def get_current_user(
         )
     # 从数据库根据用户ID查询用户信息
     user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        # 令牌本身没坏、但账号已经被删掉了。这里必须先兜住 None，
+        # 否则下一行的 user.status 会抛 AttributeError，用户拿到的是 500 而不是 401。
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的登录凭证"
+        )
     if user.status != 1:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="用户被禁用"

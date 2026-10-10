@@ -1,7 +1,12 @@
 import json
 import traceback
+from typing import cast
 
 from openai import OpenAI
+from openai.types.chat import (
+    ChatCompletionMessageFunctionToolCall,
+    ChatCompletionToolUnionParam,
+)
 from sqlalchemy.orm import Session
 
 from app.common.exceptions import BusinessException
@@ -160,11 +165,24 @@ def chat(db: Session, data: ChatRequest):
             res = client.chat.completions.create(
                 model=settings.LLM_MODEL,
                 messages=messages,
-                tools=TOOLS,
+                # TOOLS 是手写的 JSON Schema dict。openai 3.x 要求列表项是
+                # ChatCompletionFunctionToolParam，而它的 function 字段是 BaseModel
+                # （不是 TypedDict），dict 字面量没法通过结构化匹配。这里的 dict
+                # 就是标准的 function tool schema，如实断言即可。
+                tools=cast(list[ChatCompletionToolUnionParam], TOOLS),
                 tool_choice="auto",
             )
             msg = res.choices[0].message
-            tool_calls = msg.tool_calls or []
+            # msg.tool_calls 的元素是 ChatCompletionMessageFunctionToolCall 与
+            # ChatCompletionMessageCustomToolCall 的联合（后者是 OpenAI 的 freeform
+            # 工具，参数挂在 call.custom 上、没有 call.function）。本项目只注册标准
+            # function 工具，这里按类型收窄：既消掉类型错误，也避免万一模型返回了
+            # custom 调用时在 call.function 上抛 AttributeError。
+            tool_calls = [
+                call
+                for call in (msg.tool_calls or [])
+                if isinstance(call, ChatCompletionMessageFunctionToolCall)
+            ]
             if not tool_calls:  # 没有工具调用 则直接返回大模型的输出结果内容
                 content = msg.content
                 if not content or not content.strip():

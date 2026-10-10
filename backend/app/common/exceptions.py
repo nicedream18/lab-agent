@@ -1,5 +1,6 @@
+from typing import cast
+
 from fastapi import HTTPException, Request
-from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.common.response import Response
@@ -14,32 +15,42 @@ class BusinessException(Exception):
         super().__init__(message)
 
 
-async def bussiness_excpetion_hadler(request: Request, exc: BusinessException):
+async def bussiness_excpetion_hadler(_: Request, exc: Exception):
     """自定义业务异常处理器"""
+    # starlette 的 ExceptionHandler 把第二个参数声明为 Exception，而函数参数是
+    # 逆变的：声明成 BusinessException 会被判为不兼容。FastAPI 是按注册的异常
+    # 类型分派的，走到这里的一定是 BusinessException，这里如实断言。
+    biz = cast(BusinessException, exc)
     return JSONResponse(
         status_code=200,
-        content=Response.error(code=exc.code, message=exc.message).model_dump(),
+        content=Response.error(code=biz.code, message=biz.message).model_dump(),
     )
 
 
-async def http_excpetion_hadler(request: Request, exc: HTTPException):
+async def http_excpetion_hadler(_: Request, exc: Exception):
     """Http异常处理器"""
+    # 同上：按注册类型分派，这里必定是 HTTPException。
+    http_exc = cast(HTTPException, exc)
     return JSONResponse(
-        status_code=exc.status_code,
-        content=Response.error(code=exc.status_code, message=exc.detail).model_dump(),
+        status_code=http_exc.status_code,
+        content=Response.error(
+            code=http_exc.status_code, message=http_exc.detail
+        ).model_dump(),
     )
 
 
-async def validation_excpetion_hadler(request: Request, exc: RequestValidationError):
+async def validation_excpetion_hadler(_: Request, exc: Exception):
     """参数异常处理器"""
+    del exc  # 参数由 FastAPI 传入；这里只用固定文案，不需要异常对象
     return JSONResponse(
         status_code=422,
         content=Response.error(code=422, message="请求参数校验错误").model_dump(),
     )
 
 
-async def global_excpetion_hadler(request: Request, exc: Exception):
+async def global_excpetion_hadler(_: Request, exc: Exception):
     """全局异常处理器"""
+    del exc  # 参数由 FastAPI 传入；这里只用固定文案，不需要异常对象
     return JSONResponse(
         status_code=500,
         content=Response.error(code=500, message="服务器内部错误").model_dump(),

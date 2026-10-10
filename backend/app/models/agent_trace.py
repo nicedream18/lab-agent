@@ -21,7 +21,7 @@ class AgentTrace(Base):
     )
     user_id: Mapped[int] = mapped_column(Integer, index=True, comment="发起用户")
     node_name: Mapped[str] = mapped_column(
-        String(32), comment="节点名：analyze/plan/route/execute/reflect/respond"
+        String(32), comment="节点名：analyze/plan/agent/execute/replan/respond"
     )
     step_index: Mapped[int] = mapped_column(
         Integer, default=0, comment="节点在同一次运行中的序号，用于排序"

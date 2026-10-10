@@ -17,7 +17,7 @@
 
     <div v-show="!collapsed" class="trace-body">
       <div v-if="!trace.items.length" class="trace-empty">
-        发起一次对话，这里会逐步展示 Agent 的理解、规划、工具调用与校验过程。
+        发起一次对话，这里会逐步展示 Agent 的理解、决策与工具调用过程。
       </div>
 
       <ol v-else class="trace-list">
@@ -37,6 +37,7 @@
             <div class="trace-label">
               <span>{{ item.label }}</span>
               <em v-if="item.kind === 'tool'">TOOL</em>
+              <em v-if="item.write" class="trace-write">写库</em>
               <i v-if="item.duration">{{ item.duration }}ms</i>
             </div>
             <p v-if="item.reason" class="trace-reason">{{ item.reason }}</p>
@@ -44,24 +45,6 @@
           </div>
         </li>
       </ol>
-
-      <section v-if="trace.plan.length" class="trace-block">
-        <div class="trace-block-title">
-          任务计划
-          <em>第 {{ trace.planRound + 1 }} 轮</em>
-        </div>
-        <div
-          v-for="step in trace.plan"
-          :key="`${trace.planRound}-${step.id}`"
-          class="trace-plan-row"
-        >
-          <b>{{ step.id }}</b>
-          <div>
-            <strong>{{ step.label }}</strong>
-            <p v-if="step.reason">{{ step.reason }}</p>
-          </div>
-        </div>
-      </section>
 
       <section v-if="trace.analysis" class="trace-block">
         <div class="trace-block-title">需求理解</div>
@@ -80,18 +63,37 @@
         </div>
       </section>
 
-      <section v-if="trace.reflection" class="trace-block">
+      <!-- 任务计划：只有模型判定 plan_needed 时才会出现，
+           简单请求的界面跟以前一模一样。 -->
+      <section v-if="trace.plan" class="trace-block">
         <div class="trace-block-title">
-          反思与校验
-          <em>第 {{ trace.reflection.round + 1 }} 轮</em>
+          任务计划
+          <em v-if="trace.plan.revision">已调整 {{ trace.plan.revision }} 次</em>
         </div>
-        <span
-          class="trace-verdict"
-          :class="trace.reflection.verdict === 'replan' ? 'trace-verdict--replan' : ''"
-        >
-          {{ trace.reflection.verdict === 'replan' ? '需要重新规划' : '通过，可以收尾' }}
-        </span>
-        <p class="trace-reflect">{{ trace.reflection.text }}</p>
+        <ol class="trace-plan">
+          <li
+            v-for="(step, index) in trace.plan.steps"
+            :key="index"
+            class="trace-plan-item"
+            :class="`trace-plan-item--${planStepState(index)}`"
+          >
+            <span class="trace-plan-mark">
+              <el-icon v-if="planStepState(index) === 'running'" class="is-spin"
+                ><Loading
+              /></el-icon>
+              <el-icon v-else-if="planStepState(index) === 'failed'"><Close /></el-icon>
+              <el-icon v-else-if="planStepState(index) === 'done'"><Check /></el-icon>
+              <template v-else>{{ index + 1 }}</template>
+            </span>
+            <div class="trace-plan-text">
+              <p>{{ step.goal }}</p>
+              <em v-if="(step.hint_tools || []).length">{{ hintText(step.hint_tools) }}</em>
+            </div>
+          </li>
+        </ol>
+        <div v-if="trace.plan.reason" class="trace-reason trace-plan-reason">
+          {{ trace.plan.reason }}
+        </div>
       </section>
 
       <section class="trace-block">
@@ -124,7 +126,7 @@
 
 <script setup>
 import { computed, ref } from 'vue'
-import { SLOT_LABELS } from '@/utils/agentTrace'
+import { SLOT_LABELS, TOOL_LABELS } from '@/utils/agentTrace'
 
 const props = defineProps({
   trace: { type: Object, required: true },
@@ -142,9 +144,35 @@ const missingText = computed(() =>
   (props.trace.analysis?.missing || []).map((key) => slotLabels[key] || key).join('、')
 )
 
+// 建议工具用的是后端工具名，面板是给人看的，翻成同一套中文文案。
+const hintText = (names) => '可用：' + names.map((name) => TOOL_LABELS[name] || name).join(' / ')
+
+/**
+ * 一步处于什么状态。
+ *
+ * 判据只有 done 数组，不再额外读游标：后端保证 done 只保存**当前计划的**
+ * 前缀（重规划时把失败那一步连同后面的记录一起丢掉），所以 done.length
+ * 恰好就是「下一个该跑的步骤」的下标，下标可以直接当步骤号用。
+ */
+function planStepState(index) {
+  const plan = props.trace.plan
+  if (!plan) return 'pending'
+  const record = plan.done[index]
+  if (record) return record.ok ? 'done' : 'failed'
+  // 整轮已经结束（running=false）时不该再有「正在跑」的步骤，
+  // 剩下的统一显示成待执行，避免界面看起来还在动。
+  if (!props.trace.running) return 'pending'
+  return index === plan.done.length ? 'running' : 'pending'
+}
+
 const subtitle = computed(() => {
-  const { running, toolCount, totalMs, items } = props.trace
-  if (running) return '正在运行…'
+  const { running, toolCount, totalMs, items, plan } = props.trace
+  if (running) {
+    // 有计划的时候，光看「正在运行…」看不出进度，把第几步摆出来。
+    return plan
+      ? `正在执行第 ${Math.min(plan.done.length + 1, plan.steps.length)}/${plan.steps.length} 步…`
+      : '正在运行…'
+  }
   if (!items.length) return '等待任务'
   const parts = [`${items.length} 个节点`, `${toolCount} 次工具调用`]
   if (totalMs) parts.push(`${(totalMs / 1000).toFixed(1)}s`)
@@ -342,6 +370,13 @@ const subtitle = computed(() => {
   letter-spacing: 0.4px;
 }
 
+/* 「写库」标记刻意用暖色，和 TOOL 的中性绿拉开距离 ——
+   这是整条轨迹里唯一需要用户留意的信号：它代表数据真的变了。 */
+.trace-label em.trace-write {
+  color: #9c5222;
+  background: #fbeee2;
+}
+
 .trace-label i {
   color: #96a49b;
   font-size: 10px;
@@ -398,40 +433,6 @@ const subtitle = computed(() => {
   font-weight: 500;
 }
 
-.trace-plan-row {
-  display: flex;
-  gap: 8px;
-  padding: 7px 0;
-}
-
-.trace-plan-row + .trace-plan-row {
-  border-top: 1px solid #f1f5f2;
-}
-
-.trace-plan-row > b {
-  display: grid;
-  width: 17px;
-  height: 17px;
-  flex: 0 0 17px;
-  place-items: center;
-  border-radius: 5px;
-  color: var(--app-green);
-  background: #edf5ef;
-  font-size: 10px;
-}
-
-.trace-plan-row strong {
-  color: var(--app-ink);
-  font-size: 11px;
-}
-
-.trace-plan-row p {
-  margin: 3px 0 0;
-  color: var(--app-muted);
-  font-size: 10px;
-  line-height: 1.55;
-}
-
 .trace-kv {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -469,26 +470,91 @@ const subtitle = computed(() => {
   font-size: 10px;
 }
 
-.trace-verdict {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 999px;
-  color: #3f8a63;
-  background: #edf5ef;
-  font-size: 10px;
-  font-weight: 650;
+/* ---------- 任务计划 ---------- */
+.trace-plan {
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-.trace-verdict--replan {
-  color: #a1701f;
-  background: #fdf6e6;
+.trace-plan-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 5px 7px;
+  border-radius: 7px;
 }
 
-.trace-reflect {
-  margin: 8px 0 0;
-  color: #5c6f64;
+.trace-plan-item + .trace-plan-item {
+  margin-top: 3px;
+}
+
+/* 当前步骤给一层浅底 + 左侧色条，扫一眼就能定位到「现在到哪了」 */
+.trace-plan-item--running {
+  background: #f2f8f4;
+  box-shadow: inset 2px 0 0 var(--app-green);
+}
+
+.trace-plan-mark {
+  display: grid;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  margin-top: 1px;
+  place-items: center;
+  border-radius: 50%;
+  color: #8c9d92;
+  background: #f0f4f1;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.trace-plan-item--done .trace-plan-mark {
+  color: #fff;
+  background: #57a477;
+}
+
+.trace-plan-item--failed .trace-plan-mark {
+  color: #fff;
+  background: #cf7a70;
+}
+
+.trace-plan-item--running .trace-plan-mark {
+  color: var(--app-green);
+  background: #e3f0e8;
+}
+
+.trace-plan-text {
+  min-width: 0;
+  flex: 1;
+}
+
+.trace-plan-text p {
+  margin: 0;
+  color: var(--app-ink);
   font-size: 11px;
-  line-height: 1.7;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.trace-plan-item--pending .trace-plan-text p {
+  color: #7d8e84;
+}
+
+.trace-plan-item--failed .trace-plan-text p {
+  color: #a8524a;
+}
+
+.trace-plan-text em {
+  display: block;
+  margin-top: 2px;
+  color: #96a49b;
+  font-size: 9px;
+  font-style: normal;
+}
+
+.trace-plan-reason {
+  margin-top: 6px;
 }
 
 .trace-memory {

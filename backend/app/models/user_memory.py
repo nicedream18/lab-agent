@@ -26,9 +26,7 @@ class UserMemory(Base):
     memory_type: Mapped[str] = mapped_column(
         String(32), default="preference", comment="类型：preference/habit/fact"
     )
-    content: Mapped[str] = mapped_column(
-        String(500), comment="记忆内容，一句话描述"
-    )
+    content: Mapped[str] = mapped_column(String(500), comment="记忆内容，一句话描述")
     hit_count: Mapped[int] = mapped_column(
         Integer, default=0, comment="被注入提示词的次数，可用于淘汰冷记忆"
     )

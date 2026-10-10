@@ -20,7 +20,7 @@ def get_equipment_list(
     page_size: int = 10,
     keywords: str | None = None,
     lab_id: int | None = None,
-    current_user: Equipment = Depends(get_current_user),
+    _: Equipment = Depends(get_current_user),  # 参数仅为触发鉴权
     db: Session = Depends(get_db),
 ):
     res = equipment_service.get_equipment_page_list(
@@ -32,7 +32,7 @@ def get_equipment_list(
 @router.post("")
 def create_equipment(
     data: EquipmentCreateRequest,
-    current_user: Equipment = Depends(get_current_admin),
+    _: Equipment = Depends(get_current_admin),  # 参数仅为触发鉴权
     db: Session = Depends(get_db),
 ):
     res = equipment_service.create_equipment(db, data)
@@ -43,7 +43,7 @@ def create_equipment(
 def update_equipment(
     equipment_id: int,
     data: EquipmentUpdateRequest,
-    current_user: Equipment = Depends(get_current_admin),
+    _: Equipment = Depends(get_current_admin),  # 参数仅为触发鉴权
     db: Session = Depends(get_db),
 ):
     res = equipment_service.update_equipment(db, equipment_id, data)
@@ -53,7 +53,7 @@ def update_equipment(
 @router.delete("/{equipment_id}")
 def delete_equipment(
     equipment_id: int,
-    current_user: Equipment = Depends(get_current_admin),
+    _: Equipment = Depends(get_current_admin),  # 参数仅为触发鉴权
     db: Session = Depends(get_db),
 ):
     equipment_service.delete_equipment(db, equipment_id)

@@ -1,9 +1,11 @@
 import logging
 import threading
 import time
+from typing import cast
 
 import chromadb
 from chromadb.api.models.Collection import Collection
+from chromadb.api.types import Embeddable, EmbeddingFunction
 from chromadb.utils import embedding_functions
 
 from app.config import BASE_DIR
@@ -46,8 +48,15 @@ def _build_collection() -> Collection:
     KB_DIR.mkdir(parents=True, exist_ok=True)
     CHROMA_DIR.mkdir(parents=True, exist_ok=True)
     client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    # chroma 把这个形参声明成 EmbeddingFunction[Embeddable]（Embeddable = 文本 ∪ 图片），
+    # 而 get_embedding_fn() 返回的 SentenceTransformerEmbeddingFunction 是
+    # EmbeddingFunction[Documents]（只处理文本）。Protocol 的泛型参数出现在 __call__
+    # 的入参位置上，属于不变型参数，所以 EmbeddingFunction[Documents] 并不是
+    # EmbeddingFunction[Embeddable] 的子类型。我们只灌纯文本文档，这里如实断言，
+    # 运行时行为与改前完全一致。
+    embedding_fn = cast(EmbeddingFunction[Embeddable], get_embedding_fn())
     col = client.get_or_create_collection(
-        name=COLLECTION_NAME, embedding_function=get_embedding_fn()
+        name=COLLECTION_NAME, embedding_function=embedding_fn
     )
     if col.count() == 0:
         ids = []

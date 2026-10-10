@@ -84,9 +84,7 @@ def _normalize_host(host) -> str:
     return host.rstrip(".").lower()
 
 
-def _patched_getaddrinfo(
-    host, port, family=0, type=0, proto=0, flags=0  # noqa: A002
-):
+def _patched_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     results = _original_getaddrinfo(host, port, family, type, proto, flags)
     if family in (0, socket.AF_UNSPEC) and _normalize_host(host) in _IPV4_ONLY_HOSTS:
         ipv4_only = [item for item in results if item[0] == socket.AF_INET]
@@ -111,7 +109,7 @@ def _patch_uvloop() -> bool:
         return True
 
     try:
-        import uvloop  # noqa: PLC0415
+        import uvloop
     except ImportError:
         return False
 
@@ -122,10 +120,13 @@ def _patch_uvloop() -> bool:
         # 由调用方（启动日志）提醒使用者改用 --loop asyncio。
         return False
 
-    async def patched_getaddrinfo(  # noqa: A002
+    async def patched_getaddrinfo(
         loop_self, host, port, family=0, type=0, proto=0, flags=0
     ):
-        if family in (0, socket.AF_UNSPEC) and _normalize_host(host) in _IPV4_ONLY_HOSTS:
+        if (
+            family in (0, socket.AF_UNSPEC)
+            and _normalize_host(host) in _IPV4_ONLY_HOSTS
+        ):
             family = socket.AF_INET
         return await original(
             loop_self, host, port, family=family, type=type, proto=proto, flags=flags

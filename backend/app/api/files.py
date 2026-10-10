@@ -14,7 +14,7 @@ router = APIRouter(prefix="/files", tags=["文件管理"])
 
 
 @router.post("/upload")
-def upload(file: UploadFile = File(...)):
+def upload(file: UploadFile = File(...)):  # noqa: B008
     """文件上传的接口"""
     if not file.filename:
         raise BusinessException(message="文件名不能为空")

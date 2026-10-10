@@ -49,7 +49,7 @@ def cancel_reservation(
 def audit_reservation(
     reservation_id: int,
     data: AuditReservationRequest,
-    current_user: User = Depends(get_current_admin),
+    _: User = Depends(get_current_admin),  # 参数仅为触发管理员鉴权
     db: Session = Depends(get_db),
 ):
     reservation_service.audit_reservation(db, reservation_id, data.status)

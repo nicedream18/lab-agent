@@ -89,7 +89,7 @@ export function saveChat(userId, { conversationId, messages, trace } = {}) {
   }
 }
 
-/** 清空留档（「清空对话」按钮用）。 */
+/** 清空留档（重开一条新对话、或删掉当前会话时用）。 */
 export function clearChat(userId) {
   try {
     localStorage.removeItem(scopeKey(userId))
