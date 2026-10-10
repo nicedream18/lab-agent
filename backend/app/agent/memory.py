@@ -117,17 +117,20 @@ def _profile_summary(db: Session, user_id: int) -> str:
 
     lines = [f"## 用户画像（来自 {total} 条真实预约记录）"]
 
-    top = (
+    # 实验室：只有出现明确的「第一名」才写。并列（比如三个实验室各约 1 次）
+    # 时**不写** —— 那正对应「模型该中性追问」的情形（见 prompt 规则 12）。
+    lab_rows = (
         db.query(Reservation.lab_id, func.count(Reservation.id).label("cnt"))
         .filter(*filters)
         .group_by(Reservation.lab_id)
         .order_by(func.count(Reservation.id).desc(), Reservation.lab_id.desc())
-        .first()
+        .limit(2)
+        .all()
     )
-    if top is not None:
-        lab = db.get(Lab, top.lab_id)
+    if lab_rows and (len(lab_rows) == 1 or lab_rows[0].cnt > lab_rows[1].cnt):
+        lab = db.get(Lab, lab_rows[0].lab_id)
         if lab is not None:
-            lines.append(f"- 最常用实验室：{lab.name}（{top.cnt} 次）")
+            lines.append(f"- 最常用实验室：{lab.name}（{lab_rows[0].cnt} 次）")
 
     starts = [row[0] for row in db.query(Reservation.start_time).filter(*filters).all()]
     period_counter: Counter[str] = Counter()
@@ -139,12 +142,17 @@ def _profile_summary(db: Session, user_id: int) -> str:
         period_counter[_period_of(hour)] += 1
         start_counter[str(start)] += 1
 
-    if period_counter:
-        period, count = period_counter.most_common(1)[0]
-        common_start = start_counter.most_common(1)[0][0]
-        lines.append(
-            f"- 习惯时段：{period}（{count} 次），最常见开始时间 {common_start}"
-        )
+    # 时段：要成为「习惯」，至少得在同一时段约过 2 次，且明显多于其他时段。
+    # 只约过一次、或几个时段次数打平，都不该被说成习惯 —— 那会被模型当成
+    # 事实端给用户，而它其实只是噪声。
+    ranked_periods = period_counter.most_common()
+    if ranked_periods:
+        period, count = ranked_periods[0]
+        if count >= 2 and (len(ranked_periods) == 1 or count > ranked_periods[1][1]):
+            common_start = start_counter.most_common(1)[0][0]
+            lines.append(
+                f"- 习惯时段：{period}（{count} 次），最常见开始时间 {common_start}"
+            )
 
     # 只有表头、没算出任何一条有效画像时返回空串，别给模型一张空表。
     return "\n".join(lines) if len(lines) > 1 else ""
