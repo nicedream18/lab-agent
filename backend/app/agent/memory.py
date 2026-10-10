@@ -117,8 +117,14 @@ def _profile_summary(db: Session, user_id: int) -> str:
 
     lines = [f"## 用户画像（来自 {total} 条真实预约记录）"]
 
-    # 实验室：只有出现明确的「第一名」才写。并列（比如三个实验室各约 1 次）
-    # 时**不写** —— 那正对应「模型该中性追问」的情形（见 prompt 规则 12）。
+    # 实验室：要同时满足两条才写 ——
+    #   ① 至少 2 次，② 明确多于第二名。
+    # ①是必须的：只约过 1 次谈不上「最常用」。以前没有这条下限，用户唯一那条
+    #   预约会被写成「最常用实验室：X（1 次）」端给模型，模型再当事实转述给用户，
+    #   而它其实只是一个数据点。要和下面「习惯时段」的 `count >= 2` 保持一致 ——
+    #   同一份画像里两行判据不应该一个严一个松。
+    # ② 处理并列（三个实验室各约 1 次）—— 那正对应「模型该中性追问」的情形
+    #   （见 prompt 规则 12）。
     lab_rows = (
         db.query(Reservation.lab_id, func.count(Reservation.id).label("cnt"))
         .filter(*filters)
@@ -127,7 +133,11 @@ def _profile_summary(db: Session, user_id: int) -> str:
         .limit(2)
         .all()
     )
-    if lab_rows and (len(lab_rows) == 1 or lab_rows[0].cnt > lab_rows[1].cnt):
+    if (
+        lab_rows
+        and lab_rows[0].cnt >= 2
+        and (len(lab_rows) == 1 or lab_rows[0].cnt > lab_rows[1].cnt)
+    ):
         lab = db.get(Lab, lab_rows[0].lab_id)
         if lab is not None:
             lines.append(f"- 最常用实验室：{lab.name}（{lab_rows[0].cnt} 次）")

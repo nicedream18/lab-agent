@@ -55,7 +55,12 @@ from app.services import (
 
 # 单个工具返回给模型的最大字符数。不做限制的话，
 # 一次实验室列表查询就能把上下文撑爆，且浪费 token。
-MAX_RESULT_CHARS = 1500
+# ⚠️ 这个值和 kb_service.TOP_K_FINAL 必须一起看：
+# 知识库检索会返回 TOP_K_FINAL(3) 个切片，每片正文 ≤ 300 字 + 章节路径前缀，
+# 经过 json.dumps（换行要转义成 \n）后大约 1100~1300 字。
+# 原来的 1500 只剩 15% 余量，稍长的切片就会被「…（已截断）」砍在句子中间，
+# 而且这里和 kb_service 的两处截断互相不知情 —— 所以留足余量。
+MAX_RESULT_CHARS = 2400
 
 # 用户名下「待审核 + 已通过」预约的配额上限
 MAX_ACTIVE_RESERVATIONS = 5
