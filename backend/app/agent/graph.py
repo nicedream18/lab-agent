@@ -290,7 +290,7 @@ def node_agent(ctx: AgentContext):
         # 这个函数要能算出「会不会退回全集」，改动绑定逻辑时两处必须一起改，
         # 但比把 agent_step 的返回值改成元组（会牵动所有调用方和测试）划算。
         bound_tools = tools.bindable_tool_names(
-            bool(state.get("authorized")), only=hint_tools
+            set(state.get("allowed_write_tools") or []), only=hint_tools
         )
 
         with trace_node(ctx, "agent", input_text=state.get("user_query") or "") as box:
@@ -371,7 +371,7 @@ def node_execute(ctx: AgentContext):
         if not calls:
             return {}
 
-        authorized = bool(state.get("authorized"))
+        allowed_writes = set(state.get("allowed_write_tools") or [])
         results = list(state.get("tool_results") or [])
         messages: list = []
         step_index = len(results)
@@ -380,8 +380,8 @@ def node_execute(ctx: AgentContext):
         # 幂等闸门也只认「本步之前是否已经成功做过同样的写操作」。
         # 快路径下 cursor 恒为 0，这个字段没有任何副作用。
         cursor = state.get("plan_cursor") or 0
-        # 本轮真正交到模型手里的工具名。为空表示「上一轮没记录」——
-        # 那种情况下不设限（宁可放行，也不要因为状态缺失把合法调用全拦掉）。
+        # 本轮真正交到模型手里的工具名。即使状态缺失也按空清单处理，
+        # 执行边界必须在失败时收紧，不能默认放行。
         bound = set(state.get("bound_tools") or [])
 
         with trace_node(
@@ -395,7 +395,7 @@ def node_execute(ctx: AgentContext):
                 step_index += 1
                 status = "success"
 
-                if bound and tool_name not in bound:
+                if tool_name not in bound:
                     # 越界调用：模型点了一个这一轮根本没提供给它的工具。
                     # 部分 OpenAI 兼容网关对 tools 参数并不严格，实测模型确实会
                     # 吐出清单外的名字，所以 bind_tools 那层约束是不完备的。
@@ -414,6 +414,10 @@ def node_execute(ctx: AgentContext):
                         ),
                     }
                     elapsed = 0.0
+                elif tool_name in WRITE_TOOLS and tool_name not in allowed_writes:
+                    logger.warning("拦截未授权的写库调用：%s", tool_name)
+                    result = {"ok": False, "error": UNAUTHORIZED_WRITE}
+                    elapsed = 0.0
                 elif tools.is_duplicate_write(tool_name, args, results):
                     # 幂等闸门：重规划之后，模型很可能把「已经成功的那次写库」
                     # 又安排一遍。写库不可撤回，重复创建就是两条真实数据。
@@ -431,15 +435,6 @@ def node_execute(ctx: AgentContext):
                     }
                     elapsed = 0.0
                     status = "skipped"
-                elif tool_name in WRITE_TOOLS and not authorized:
-                    # 第二道闸门。正常情况走不到这里：bind_tools 根本没把写库工具
-                    # 交给模型。但「正常情况走不到」不是省略它的理由 —— 网关换了
-                    # 实现、模型编出一个工具名，这里是最后一道拦截。
-                    logger.warning(
-                        "拦截未授权的写库调用：%s（authorized=False）", tool_name
-                    )
-                    result = {"ok": False, "error": UNAUTHORIZED_WRITE}
-                    elapsed = 0.0
                 else:
                     # 工具级计时与节点级计时是两回事：一个 execute 节点的耗时里
                     # 还包含 emit、写审计这些开销，而审计关心的是
@@ -656,8 +651,8 @@ def _replan_needed(state: AgentState) -> bool:
 
     # 有失败、也有备用工具，才值得让模型重排一次；
     # 否则重规划只会得到一份一模一样的计划。
-    authorized = bool(state.get("authorized"))
-    available = {item.name for item in tools.bindable_tools(authorized)}
+    allowed_writes = set(state.get("allowed_write_tools") or [])
+    available = {item.name for item in tools.bindable_tools(allowed_writes)}
     used = {item.get("tool") for item in current}
     return bool(available - used)
 
@@ -768,6 +763,7 @@ def _initial_state(ctx: AgentContext, query: str, history: list[dict]) -> AgentS
         plan_reason="",
         step_round=0,
         step_results=[],
+        allowed_write_tools=[],
         final_response="",
     )
 

@@ -21,7 +21,8 @@ v2 把这套协议整层删掉，改由模型直接返回 tool_calls：模型输
 其余环节（执行工具、决定要不要再来一轮、产出最终回复）全部在 graph.py。
 
 为什么 analyze 还保留结构化输出？因为它产出的东西**不是给模型看的，是给系统
-用的**：authorized 是写库闸门的一道判断，missing_slots 要用来生成追问话术。
+用的**：模型的 authorized 只供比对，写库许可由本轮原话单独决定；
+missing_slots 用来生成追问话术。
 这类结论必须能被代码读取，也就必须落在一个固定格式里。
 """
 
@@ -348,8 +349,7 @@ MODEL_UNAVAILABLE = "模型暂时不可用，请稍后再试（过一会儿再�
 # 真出现了说明它的返回被网关裁成了空。这时候给用户一句能立刻重试的话，
 # 比让他对着空白的聊天框发呆好。
 EMPTY_REPLY = (
-    "抱歉，我没能整理出结论。可以换一种说法再说一次，"
-    "或者说清楚实验室、日期和时间段。"
+    "抱歉，我没能整理出结论。可以换一种说法再说一次，或者说清楚实验室、日期和时间段。"
 )
 
 
@@ -383,6 +383,7 @@ def _unavailable() -> dict:
         "slots": {},
         "missing_slots": [],
         "authorized": False,
+        "allowed_write_tools": [],
         "plan_needed": False,
         "error": MODEL_UNAVAILABLE,
     }
@@ -404,8 +405,7 @@ def write_outcomes(results: list[dict] | None) -> list[str]:
             continue
         tool = item.get("tool")
         window = (
-            f"{result.get('date')} {result.get('start_time')}-"
-            f"{result.get('end_time')}"
+            f"{result.get('date')} {result.get('start_time')}-{result.get('end_time')}"
         )
         if tool == "create_reservation":
             lines.append(
@@ -436,15 +436,11 @@ def write_outcomes(results: list[dict] | None) -> list[str]:
 #
 # 关键区分一：authorized 判断的是「用户有没有吩咐我们去写库」，这是**语言问题**；
 # 「这个用户有没有权限写库」是**权限问题**，属于 check_user_permission 的职责。
-# 语言问题用确定性识别比赌模型可靠得多，所以这里与模型判断取并集。
+# 模型的授权判断只作为观测，具体许可由本轮原话独立计算。
 #
 # 关键区分二：这里的规则**不参与选择工具**。选哪个工具、要不要先查再写，
 # 完全由模型根据用户意图和工具描述决定（见 AGENT_SYSTEM_PROMPT）。
-# 这组正则只回答一个是非题：用户到底有没有吩咐我们改数据。
-_BOOKING_VERB_PATTERN = re.compile(
-    r"(?<![的。])(预约|预订|预定|帮我约|我要约|帮我订|帮我定|改约|预约个)"
-)
-
+# 这组规则只回答本轮明确要求的是哪一个写库操作，不负责推断工具参数。
 # 取消类动词。
 #
 # 为什么要单独识别：取消是**不可逆**的写库操作，它出问题的形态和预约不一样 ——
@@ -452,10 +448,6 @@ _BOOKING_VERB_PATTERN = re.compile(
 # query_user_reservations 查到的「待审核」记录，对用户宣称
 # 「已为您取消」——用户以为没事了，预约却还在。
 # 所以它必须和 create_reservation 享受同一套确定性识别。
-_CANCEL_VERB_PATTERN = re.compile(
-    r"(?<![的。])(取消|撤消|撤销|退掉|退订|退了|作废|不借了|不用了)"
-)
-
 # 疑问语气标记。
 #
 # 这是排除「在询问而非在下单」的关键：「预约需要什么材料？」「明天能预约吗？」
@@ -553,6 +545,19 @@ _PUT_CANCEL_PATTERN = re.compile(
 _BOOKING_IMPERATIVE_PATTERN = re.compile(
     _IMPERATIVE_MARK + r"[^，。？！,?!]{0,4}(?<![的。])(约|订|定|预约|预订|预定)"
 )
+_DIRECT_BOOKING_PATTERN = re.compile(
+    r"^\s*(?:请|现在|立即|直接|确认)?(?:预约|预订|预定|改约)"
+)
+_DIRECT_CANCEL_PATTERN = re.compile(
+    r"^\s*(?:请|现在|立即|直接|确认)?(?:取消|撤销|撤消|退订)"
+)
+_NEGATED_ACTION_PATTERN = re.compile(
+    r"(?:不想|不要|别|暂不|先不|先别|无需|不必|别再|不要再)"
+    r"[^，。？！,?!]{0,12}(?:预约|预订|预定|约|取消|撤销|撤消|退订)"
+)
+_DEFER_ACTION_PATTERN = re.compile(
+    r"(?:先不要|不要|先别|暂不|别)(?:真的)?(?:提交|执行|操作|下单)"
+)
 
 
 def explicit_write_request(text: str) -> str | None:
@@ -560,26 +565,15 @@ def explicit_write_request(text: str) -> str | None:
 
     返回 "cancel_reservation" / "create_reservation" / None。
 
-    为什么返回工具名而不是 bool：authorized 只能告诉系统「允许写」，
-    但写库步骤被模型整步漏掉时，系统得知道该补**哪一个**工具。
-    把「补什么」也交给确定性规则，才能彻底避免「用户下了单、系统什么都没做」。
-
-    判定顺序（每一步的顺序都是有理由的，不要随手调换）：
-
-      1. 摘掉只读/情态/讲解/信息名词片段
-         「查一下我的预约」里的「预约」是名词，不是动词。
-         不先摘掉，读的操作会被当成写的指令 —— 而 cancel_reservation
-         不可逆，一次误判就是一条被删掉的预约。
-      2. 祈使取消  → 3. 祈使预约
-         取消优先：「帮我把周四的取消掉，改约周五下午」同时命中两组动词，
-         取取消 —— 不可逆的那一步必须先被看见。
-      4. 疑问标记否决
-         放在祈使之后，是为了让「…有没有空，有空就帮我预约」这类
-         半问半吩咐的句子仍然按吩咐处理。
-      5. 光秃秃的动词
-         「预约明天下午2点的光学实验室」没有标志词，也是明确指令。
+    返回工具名用于限制本轮可绑定、可执行的写库工具。先剔除只读/讲解语句，
+    再按分句排除疑问，识别明确指令；两类写操作同轮出现时返回 None，
+    请用户拆开表达。规则有漏判风险，但不会把模型误判当成写库许可。
     """
     text = text or ""
+    if re.search(r"(?:可以|好|行)吗[？?]?\s*$", text):
+        return None
+    if _DEFER_ACTION_PATTERN.search(text):
+        return None
 
     # 1) 先摘掉「读」的片段，再看剩下什么
     payload = _READ_FRAME_PATTERN.sub(_STRIP_FILLER, text)
@@ -587,43 +581,44 @@ def explicit_write_request(text: str) -> str | None:
     payload = _EXPLAIN_FRAME_PATTERN.sub(_STRIP_FILLER, payload)
     payload = _RESERVATION_INFO_PATTERN.sub(_STRIP_FILLER, payload)
 
-    # 2) 祈使取消 —— 不可逆动作优先
-    if _CANCEL_IMPERATIVE_PATTERN.search(payload) or _PUT_CANCEL_PATTERN.search(
-        payload
-    ):
-        return "cancel_reservation"
-
-    # 3) 祈使预约
-    if _BOOKING_IMPERATIVE_PATTERN.search(payload):
-        return "create_reservation"
-
-    # 4) 疑问句不是指令
-    if _QUESTION_PATTERN.search(payload):
+    # 每个分句单独判定："能帮我取消吗" 是询问；"有没有空，
+    # 有空就帮我预约" 的后半句则是明确指令。问句不能因为含「帮我」
+    # 就被提前当作祈使句执行。含糊表达宁可请用户明确重说。
+    intents: set[str] = set()
+    for clause in re.split(r"[，,。；;？！?!]", payload):
+        if (
+            not clause.strip()
+            or _QUESTION_PATTERN.search(clause)
+            or _NEGATED_ACTION_PATTERN.search(clause)
+            or re.search(
+                r"(?:如果我要|假设|我打算|我之前|我刚才|我曾经|说一句|引用)", clause
+            )
+        ):
+            continue
+        cancelling = (
+            _CANCEL_IMPERATIVE_PATTERN.search(clause)
+            or _PUT_CANCEL_PATTERN.search(clause)
+            or _DIRECT_CANCEL_PATTERN.search(clause)
+        )
+        if cancelling:
+            intents.add("cancel_reservation")
+            # 「取消这个预约」的预约是名词；「取消后改约」才是第二个写操作。
+            if re.search(
+                r"改约|重新预约|再预约|另约|(?:然后|再|并|接着|同时)(?:帮我)?(?:预约|约|订)",
+                clause,
+            ):
+                intents.add("create_reservation")
+        elif _BOOKING_IMPERATIVE_PATTERN.search(
+            clause
+        ) or _DIRECT_BOOKING_PATTERN.search(clause):
+            intents.add("create_reservation")
+    # 同一轮同时要求取消和重约时，当前单操作授权协议无法安全表达两个目标；
+    # 先请用户分开指示，不能用「取消优先」偷偷丢掉后一项。
+    if len(intents) > 1:
         return None
-
-    # 5) 没有标志词，只有动词
-    if _CANCEL_VERB_PATTERN.search(payload):
-        return "cancel_reservation"
-    if _BOOKING_VERB_PATTERN.search(payload):
-        return "create_reservation"
+    if intents:
+        return intents.pop()
     return None
-
-
-def _booking_target_known(slots: dict) -> bool:
-    """用户是不是已经指明了「要动哪个实验室 / 哪台设备」。
-
-    为什么不再要求「三要素齐全」：那套判据是显式工作流留下的。当时系统要靠
-    resolve_args 自己拼工具参数，要素不齐就没法下单，所以只能等齐了再授权。
-    现在参数是模型自己拼的，缺的要素它能用 list_lab_equipments /
-    query_lab_availability 现查，或者反过来追问用户 —— 要素齐不齐是**可行性**
-    问题，不是**授权**问题。
-
-    而当年真正想挡的是「我打算预约」这种没有对象的句子。所以这里只要求一件事：
-    用户提到了实验室名或设备型号，看得见要动的是什么。
-    """
-    return any(
-        slots.get(key) not in (None, "", []) for key in ("lab_name", "equipment_name")
-    )
 
 
 def analyze(ctx: AgentContext, state: AgentState) -> dict:
@@ -633,9 +628,8 @@ def analyze(ctx: AgentContext, state: AgentState) -> dict:
     用处 —— 自主决策环节是拿着用户原话 + 槽位 + 缺失项去挑工具的，多一个
     「意图标签」只是多一次「分类判错、后面全错」的机会。
 
-    留下来的三个产出都是任务状态而不是分类标签：用户说了什么、还缺什么、
-    能不能写库。前两个是事实，第三个是安全闸门 —— graph 拿它决定要不要把
-    写库工具交给模型。
+    用户说了什么、还缺什么仍由模型解析。写库工具清单由本轮原话中的
+    明确指令决定，模型给出的 authorized 不能开放额外能力。
     """
     query = state.get("user_query") or ""
     today, weekday = today_info(state)
@@ -686,7 +680,7 @@ def analyze(ctx: AgentContext, state: AgentState) -> dict:
         missing = []
 
     # 本轮是不是在明确地下单/取消。这个结论后面两处都要用：
-    # 一是决定要不要从上文承接槽位，二是 authorized 的确定性兜底。
+    # 一是决定要不要从上文承接槽位，二是确定本轮可用的写库工具。
     wanted = explicit_write_request(query)
 
     # 模型每轮只看得到这一句话，很容易把「上一轮已经说清楚的实验室」
@@ -701,33 +695,20 @@ def analyze(ctx: AgentContext, state: AgentState) -> dict:
         if carried:
             logger.info("本轮是写库请求，沿用上文槽位：%s", "、".join(carried))
 
-    authorized = bool(data.get("authorized"))
-    # 模型说「不授权」，但用户原话就是明确的下单/取消指令 —— 以确定性结论为准。
-    # 理由见 explicit_write_request 的注释：误判成 false 的代价是
-    # 「用户要求的事系统完全没做，模型却可能宣称已办妥」，
-    # 而放宽这一次的代价只是「多走一遍 check_user_permission + 时段校验」，
-    # 两道校验仍然会挡住真正不该写的请求。
-    if not authorized:
-        if wanted == "create_reservation" and _booking_target_known(slots):
-            logger.warning(
-                "模型判定 authorized=false，但用户原话是明确的预约指令且指明了对象，"
-                "改用确定性结论放行（否则 %s 会被静默摘除）",
-                wanted,
-            )
-            authorized = True
-        elif wanted == "cancel_reservation":
-            # 取消不要求三要素齐全：用户说「取消我那条预约」时
-            # 本来就不会重复实验室和时间，真正的约束在工具内部
-            logger.warning(
-                "模型判定 authorized=false，但用户原话是明确的取消指令，"
-                "改用确定性结论放行（否则 cancel_reservation 会被静默摘除）"
-            )
-            authorized = True
+    # 模型可能把「能取消吗」误判为授权。写库许可只能来自本轮用户的明确指令，
+    # 并精确绑定到指定的操作；「好的」等含糊确认需要用户重新说明操作。
+    # 实验室名称只影响能否完成预约，不影响用户是否有权要求预约：目标不明确时
+    # 模型应追问，工具的必填参数与 service 的实体检查也会阻止空目标落库。
+    allowed_write_tools = [wanted] if wanted in WRITE_TOOLS else []
+    authorized = bool(allowed_write_tools)
+    if bool(data.get("authorized")) != authorized:
+        logger.info("模型写库授权判断与用户原话不一致，以本轮明确指令为准")
 
     return {
         "slots": slots,
         "missing_slots": [str(item) for item in missing],
         "authorized": authorized,
+        "allowed_write_tools": allowed_write_tools,
         "plan_needed": bool(data.get("plan_needed")),
         "reason": str(data.get("reason") or ""),
         "plan_reason": str(data.get("plan_reason") or ""),
@@ -1000,7 +981,7 @@ def step_context_text(state: AgentState) -> str:
     return f"第 {cursor + 1}/{total} 步：{goal}（{hint_text}）。{tail}"
 
 
-def _normalize_plan(raw: Any, authorized: bool) -> list[dict[str, Any]]:
+def _normalize_plan(raw: Any, allowed_writes: set[str]) -> list[dict[str, Any]]:
     """把模型吐出的步骤列表清洗成可执行的计划。
 
     清洗的四件事，每一件都是在堵一条「模型不老实」的路：
@@ -1034,7 +1015,7 @@ def _normalize_plan(raw: Any, authorized: bool) -> list[dict[str, Any]]:
                 key = str(name).strip()
                 if key not in tools.TOOL_REGISTRY:
                     continue
-                if key in WRITE_TOOLS and not authorized:
+                if key in WRITE_TOOLS and key not in allowed_writes:
                     continue
                 if key not in hints:
                     hints.append(key)
@@ -1062,6 +1043,13 @@ def _normalize_plan(raw: Any, authorized: bool) -> list[dict[str, Any]]:
     return plan
 
 
+def _permission_text(allowed_writes: set[str]) -> str:
+    if not allowed_writes:
+        return prompts.PERMISSION_DENIED
+    operations = "、".join(tools.tool_label(name) for name in sorted(allowed_writes))
+    return prompts.PERMISSION_GRANTED.format(operations=operations)
+
+
 def _plan_unavailable() -> dict:
     """规划失败时的产出：**不置 error**，而是给出空计划。
 
@@ -1087,7 +1075,7 @@ def make_plan(ctx: AgentContext, state: AgentState) -> dict:
         return _plan_unavailable()
 
     today, weekday = today_info(state)
-    authorized = bool(state.get("authorized"))
+    allowed_writes = set(state.get("allowed_write_tools") or [])
     prompt = prompts.PLAN_PROMPT.format(
         query=state.get("user_query") or "",
         today=today,
@@ -1095,11 +1083,9 @@ def make_plan(ctx: AgentContext, state: AgentState) -> dict:
         slots=_slots_text(state.get("slots") or {}),
         missing_slots=describe_missing(state.get("missing_slots")) or "（无）",
         memory=state.get("memory_context") or "（暂无）",
-        tools=tools.describe_tools(authorized),
+        tools=tools.describe_tools(allowed_writes),
         max_steps=MAX_PLAN_STEPS,
-        permission=(
-            prompts.PERMISSION_GRANTED if authorized else prompts.PERMISSION_DENIED
-        ),
+        permission=_permission_text(allowed_writes),
     )
 
     try:
@@ -1108,7 +1094,7 @@ def make_plan(ctx: AgentContext, state: AgentState) -> dict:
         logger.warning("任务规划失败，退回单步路径：%s", exc)
         return _plan_unavailable()
 
-    plan = _normalize_plan(data.get("steps"), authorized)
+    plan = _normalize_plan(data.get("steps"), allowed_writes)
     if not plan:
         logger.warning("模型没给出可用的计划步骤，退回单步路径")
         return _plan_unavailable()
@@ -1140,7 +1126,7 @@ def revise_plan(ctx: AgentContext, state: AgentState) -> dict:
     cursor = state.get("plan_cursor") or 0
     plan = list(state.get("plan") or [])
     revision = state.get("plan_revision") or 0
-    authorized = bool(state.get("authorized"))
+    allowed_writes = set(state.get("allowed_write_tools") or [])
 
     # 出问题的那一步 + 它拿到的观察结果。给模型看的是**观察结果**而不是
     # 「失败」这个标签 —— 它需要据此判断「是参数不对、还是这个方向根本不通」。
@@ -1162,7 +1148,7 @@ def revise_plan(ctx: AgentContext, state: AgentState) -> dict:
         done_steps=plan_steps_text(plan[:cursor]) or "（还没有完成的步骤）",
         failed_step=plan_steps_text([failed_step] if failed_step else []) or "（无）",
         observations=observations,
-        tools=tools.describe_tools(authorized),
+        tools=tools.describe_tools(allowed_writes),
         max_steps=MAX_PLAN_STEPS,
     )
 
@@ -1172,7 +1158,7 @@ def revise_plan(ctx: AgentContext, state: AgentState) -> dict:
         logger.warning("重规划失败，保持原计划继续：%s", exc)
         return {"plan_revision": revision + 1}
 
-    remaining = _normalize_plan(data.get("steps"), authorized)
+    remaining = _normalize_plan(data.get("steps"), allowed_writes)
     if not remaining:
         logger.warning("重规划没给出可用步骤，保持原计划继续")
         return {"plan_revision": revision + 1}
@@ -1264,10 +1250,8 @@ def build_agent_messages(state: AgentState) -> list[AnyMessage]:
                 # 规划层与执行层之间唯一的信息通道：本步要做什么、建议用什么工具。
                 # 快路径下它渲染成一句「本轮未启用任务计划」。
                 step_context=step_context_text(state),
-                permission=(
-                    prompts.PERMISSION_GRANTED
-                    if state.get("authorized")
-                    else prompts.PERMISSION_DENIED
+                permission=_permission_text(
+                    set(state.get("allowed_write_tools") or [])
                 ),
             )
         )
@@ -1316,7 +1300,9 @@ async def agent_step(
     """
     llm = get_llm()
     llm = llm.bind_tools(
-        tools.bindable_tools(bool(state.get("authorized")), only=hint_tools),
+        tools.bindable_tools(
+            set(state.get("allowed_write_tools") or []), only=hint_tools
+        ),
         tool_choice=tool_choice,
     )
 

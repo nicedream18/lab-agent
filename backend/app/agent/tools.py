@@ -102,14 +102,16 @@ def register(tool_obj: BaseTool) -> BaseTool:
     return tool_obj
 
 
-def bindable_tools(authorized: bool, only: set[str] | None = None) -> list[BaseTool]:
+def bindable_tools(
+    allowed_writes: set[str], only: set[str] | None = None
+) -> list[BaseTool]:
     """挑出本轮可以绑定给模型的工具，供 llm.bind_tools() 使用。
 
     这里返回的是 BaseTool 对象而不是手拼的 dict —— bind_tools() 两种都收，
     而 BaseTool 能保证「发给模型的 schema」和「工具自己的签名」永远一致。
 
-    authorized 是写库闸门在「能力层」的落点：
-    未授权时写库工具会**从清单里消失**，模型看不到、也调不到。
+    allowed_writes 是写库闸门在「能力层」的落点：
+    未在本轮明确授权的写库工具会**从清单里消失**，模型看不到、也调不到。
     这比在提示词里写「不许调用」要强得多 —— 提示词是模型可以选择不听的话，
     没提供的工具是它真的拿不到。
 
@@ -130,7 +132,7 @@ def bindable_tools(authorized: bool, only: set[str] | None = None) -> list[BaseT
     items: list[BaseTool] = []
     for tool_obj in TOOL_REGISTRY.values():
         if tool_obj.name in WRITE_TOOLS:
-            if not authorized:
+            if tool_obj.name not in allowed_writes:
                 continue
             tool_obj = tool_obj.model_copy(
                 update={"description": f"[写库] {tool_obj.description}"}
@@ -145,7 +147,9 @@ def bindable_tools(authorized: bool, only: set[str] | None = None) -> list[BaseT
     return items
 
 
-def bindable_tool_names(authorized: bool, only: set[str] | None = None) -> list[str]:
+def bindable_tool_names(
+    allowed_writes: set[str], only: set[str] | None = None
+) -> list[str]:
     """本轮真正交给模型的工具名清单。
 
     node_agent 需要它把「这一轮我提供了哪些工具」告诉执行节点，执行节点据此
@@ -153,10 +157,10 @@ def bindable_tool_names(authorized: bool, only: set[str] | None = None) -> list[
     收窄有「交集为空就退回全集」的兜底，自己算会算出与实际绑定不一致的清单，
     那样兜底路径下的合法调用会被误拒。
     """
-    return [item.name for item in bindable_tools(authorized, only=only)]
+    return [item.name for item in bindable_tools(allowed_writes, only=only)]
 
 
-def describe_tools(authorized: bool) -> str:
+def describe_tools(allowed_writes: set[str]) -> str:
     """把本轮可用工具渲染成一段给**规划提示词**看的文字。
 
     为什么必须复用 bindable_tools() 而不是直接遍历 TOOL_REGISTRY：
@@ -168,12 +172,11 @@ def describe_tools(authorized: bool) -> str:
     格式：`名称 — 中文名 — 说明（写库/只读）`，一行一个。
     """
     lines: list[str] = []
-    for tool_obj in bindable_tools(authorized):
+    for tool_obj in bindable_tools(allowed_writes):
         kind = "写库" if tool_obj.name in WRITE_TOOLS else "只读"
         description = (tool_obj.description or "").strip().replace("\n", " ")
         lines.append(
-            f"- {tool_obj.name} — {tool_label(tool_obj.name)} — "
-            f"{description}（{kind}）"
+            f"- {tool_obj.name} — {tool_label(tool_obj.name)} — {description}（{kind}）"
         )
     return "\n".join(lines) if lines else "（本轮没有可用工具）"
 
@@ -781,7 +784,7 @@ def find_available_slots(
 @register
 @tool(
     description=(
-        "真实创建一条预约记录（状态为待审核）。" "只有在用户明确确认后才可以调用。"
+        "真实创建一条预约记录（状态为待审核）。只有在用户明确确认后才可以调用。"
     ),
     extras={"label": "提交预约"},
 )
@@ -845,7 +848,7 @@ def create_reservation(
 @register
 @tool(
     description=(
-        "回查数据库，核验预约是否真的落库、当前状态是什么。" "由「验证」步骤调用。"
+        "回查数据库，核验预约是否真的落库、当前状态是什么。由「验证」步骤调用。"
     ),
     extras={"label": "验证预约结果"},
 )
