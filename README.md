@@ -38,7 +38,7 @@ flowchart LR
    cp backend/.env.example backend/.env
    ```
 
-   编辑 `backend/.env`，填入 `DATABASE_URL`、`JWT_SECRET_KEY` 和自己的 `LLM_*` 配置。示例文件中的地址和密钥均是占位符。
+   编辑 `backend/.env`，填入 `DATABASE_URL`、`JWT_SECRET_KEY` 和自己的 DeepSeek API Key。示例默认使用 `https://api.deepseek.com` 与 `deepseek-flash`；`LLM_API_KEY` 必须换成真实密钥。调用时会关闭 DeepSeek 的思考模式，以兼容当前多轮工具调用。
 3. 在两个终端分别运行：
 
    ```bash

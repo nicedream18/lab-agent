@@ -35,6 +35,7 @@ import re
 import time
 from datetime import datetime, timedelta
 from typing import Any
+from urllib.parse import urlparse
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -120,12 +121,16 @@ def missing_labels(missing: list | None) -> list[str]:
 
 
 def get_llm(streaming: bool = False) -> ChatOpenAI:
+    # DeepSeek 默认开启 thinking；多轮工具调用需要原样回传 reasoning_content。
+    # 当前 LangChain 消息链没有这个保证，先固定为非 thinking 模式，避免第二轮 400。
+    deepseek = urlparse(settings.LLM_BASE_URL).hostname == "api.deepseek.com"
     return ChatOpenAI(
         # 存根要求 SecretStr（运行时 str 其实也能被强转）。
         # 显式包一层既消掉类型报错，也避免密钥在 repr / 日志里裸奔。
         api_key=SecretStr(settings.LLM_API_KEY),
         base_url=settings.LLM_BASE_URL,
         model=settings.LLM_MODEL,
+        extra_body={"thinking": {"type": "disabled"}} if deepseek else None,
         # 结构化任务 temperature 必须为 0：同样的输入要拿到同样的 JSON，
         # 否则规划结果会飘，轨迹也没法复现。
         temperature=0,

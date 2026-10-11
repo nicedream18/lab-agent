@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import os
 import re
 import threading
 import time
@@ -17,7 +18,8 @@ logger = logging.getLogger(__name__)
 KB_DIR = BASE_DIR / "data" / "kb"
 CHROMA_DIR = BASE_DIR / "data" / "chroma"
 
-EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
+# 离线服务器可以指向预先上传的 SentenceTransformer 模型目录。
+EMBEDDING_MODEL = os.getenv("LAB_EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
 COLLECTION_NAME = "lab_kb"
 
 # ---- 切片参数 ----
@@ -218,6 +220,9 @@ def _sync_index(col: Collection) -> None:
     """
     on_disk: dict[str, tuple[str, str]] = {}
     for path in sorted(KB_DIR.glob("*.md")):
+        # macOS 拷贝时可能生成 AppleDouble 元数据文件（._*.md），不是知识文档。
+        if path.name.startswith("."):
+            continue
         text = path.read_text(encoding="utf-8").strip()
         if text:
             on_disk[path.name] = (_file_hash(text), text)

@@ -1,0 +1,24 @@
+[Unit]
+Description=Lab Agent FastAPI service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=labagent
+Group=labagent
+WorkingDirectory=/opt/lab-agent/backend
+Environment=OMP_NUM_THREADS=2
+Environment=MKL_NUM_THREADS=2
+Environment=TOKENIZERS_PARALLELISM=false
+Environment=KB_WARMUP_ON_STARTUP=false
+Environment=TZ=Asia/Shanghai
+Environment=LAB_EMBEDDING_MODEL=/opt/lab-agent/models/bge-small-zh-v1.5
+Environment=HF_HUB_OFFLINE=1
+ExecStart=/opt/lab-agent/backend/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --loop asyncio
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target
