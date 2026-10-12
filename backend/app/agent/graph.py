@@ -70,7 +70,9 @@ from app.agent.state import (
     AgentState,
 )
 from app.agent.tracer import trace_node, write_tool_execution
+from app.models.reservation import Reservation
 from app.models.user import User
+from app.services import cancellation_draft_service as cancellations
 from app.services import reservation_draft_service as drafts
 
 logger = logging.getLogger(__name__)
@@ -113,6 +115,9 @@ def _bind_writer(ctx: AgentContext) -> None:
 _CONFIRM_BOOKING = re.compile(
     r"^\s*(?:确认|确定|提交)(?:这条|这个|该)?(?:预约|预订|预定|订单)[。！!\s]*$"
 )
+_BOOKING_FOLLOWUP = re.compile(
+    r"^\s*(?:就按|按|就)(?:这个|这条|刚才的)?(?:时段|时间)?(?:预约|预订|预定|约)[。！!\s]*$"
+)
 _SLOT_REPLY = re.compile(
     r"^(?!.*(?:吗|能否|可不可以|怎么|取消|不约|不要|别|先查|查询|帮我查|看看|查一下))(?=.*(?:今天|明天|后天|\d{1,4}月|\d{1,2}[点时:]|上午|下午|晚上))[\s\S]{1,80}$"
 )
@@ -121,6 +126,143 @@ _EXPLICIT_RANGE = re.compile(
     r"\s*(?:到|至|[-–~])(?:今天|明天|后天|上午|下午|晚上|\s){0,8}"
     r"(?:[零一二三四五六七八九十两]{1,3}\s*[点时]|\d{1,2}\s*[点时]|\d{1,2}[:：]\d{2})"
 )
+
+
+def _cancel_selection(query: str, ids: list[int], db: Session, user_id: int, model_intent: str = "") -> list[int]:
+    """只解析当前用户对已保存候选的简短选择，绝不从历史文字猜编号。"""
+    query = query.strip()
+    if re.search(r"吗|么|[？?]|怎么|如何|能否|能不能|可不可以|不要.*取消|别取消|先别|先不要|先不|暂不|不取消|算了", query):
+        return []
+    if re.fullmatch(r"(?:都|全部|全都|两个|这两条|这些)(?:取消|退掉|不去了)[。！!\s]*", query) or (
+        model_intent == "cancel_all"
+        and re.fullmatch(
+            r"(?:那|把)?(?:这两条|两条|这两个|都|全部|全都|它们)(?:都)?"
+            r"(?:不要了|不去了|退了)[。！!\s]*", query
+        )
+    ):
+        return ids
+    id_phrase = re.search(r"预约(?:号|编号)?\s*(\d+(?:\s*(?:和|、|,|，)\s*\d+)*)", query)
+    mentioned = [int(value) for value in re.findall(r"\d+", id_phrase.group(1))] if id_phrase else []
+    if not mentioned and re.fullmatch(r"\s*\d+(?:\s*(?:和|、|,|，)\s*\d+)*\s*", query):
+        mentioned = [int(value) for value in re.findall(r"\d+", query)]
+    if mentioned and all(item in ids for item in mentioned):
+        return list(dict.fromkeys(mentioned))
+    times = re.findall(r"(?<!\d)(\d{1,2}):?(\d{2})\s*(?:到|[-–~])\s*(\d{1,2}):?(\d{2})", query)
+    if times:
+        rows = db.query(Reservation).filter(
+            Reservation.user_id == user_id, Reservation.id.in_(ids)
+        ).all()
+        selected = [
+            row.id for row in rows
+            if any(row.start_time == f"{int(a):02d}:{b}" and row.end_time == f"{int(c):02d}:{d}" for a,b,c,d in times)
+        ]
+        return selected if len(selected) == len(times) else []
+    spoken = re.search(
+        r"(上午|下午|晚上)?\s*([零一二两三四五六七八九十\d]{1,3})\s*[点时]"
+        r"\s*(?:到|至|[-–~])\s*(上午|下午|晚上)?\s*"
+        r"([零一二两三四五六七八九十\d]{1,3})\s*[点时]", query
+    )
+    if spoken:
+        numerals = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+                    "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+
+        def hour(value: str, period: str | None) -> int | None:
+            if value.isdigit():
+                number = int(value)
+            elif value in numerals:
+                number = numerals[value]
+            elif value.startswith("十") and len(value) == 2 and value[1] in numerals:
+                number = 10 + numerals[value[1]]
+            else:
+                return None
+            if period in ("下午", "晚上") and number < 12:
+                number += 12
+            return number if 0 <= number <= 23 else None
+
+        period = spoken.group(1)
+        start = hour(spoken.group(2), period)
+        end = hour(spoken.group(4), spoken.group(3) or period)
+        if start is not None and end is not None:
+            rows = db.query(Reservation).filter(
+                Reservation.user_id == user_id, Reservation.id.in_(ids)
+            ).all()
+            selected = [
+                row.id for row in rows
+                if row.start_time == f"{start:02d}:00" and row.end_time == f"{end:02d}:00"
+            ]
+            return selected if len(selected) == 1 else []
+    return []
+
+
+def _prepare_cancel_draft(ctx: AgentContext, state: AgentState, result: dict) -> dict:
+    query = state.get("user_query") or ""
+    draft = cancellations.load(ctx.db, ctx.user.id, ctx.conversation_id)
+    selected = _cancel_selection(query, draft.reservation_ids, ctx.db, ctx.user.id, result.get("write_followup") or "") if draft else []
+    if not selected and planner.explicit_write_request(query) == "cancel_reservation" and not re.search(r"预约(?:号|编号)?\s*\d+", query):
+        date = _cancel_date(state)
+        rows = ctx.db.query(Reservation).filter_by(
+            user_id=ctx.user.id, date=date, status=0
+        ).order_by(Reservation.id).all() if date else []
+        if 1 < len(rows) <= 20:
+            result.update(authorized=False, allowed_write_tools=[], cancel_pending=True,
+                          cancel_candidate_details=[{
+                              "reservation_id": row.id,
+                              "lab_name": row.lab.name if row.lab else "实验室",
+                              "equipment_name": row.equipment.name if row.equipment else None,
+                              "start_time": row.start_time,
+                              "end_time": row.end_time,
+                          } for row in rows],
+                          reason="该日期有多条可取消预约，请先展示全部候选")
+            return result
+    if draft is None:
+        return result
+    if selected and draft.status == "submitted":
+        result.update(error="这组预约已经处理，请查询最新预约状态", authorized=False, allowed_write_tools=[])
+    elif selected and draft.status == "ready":
+        ctx.cancel_revision = draft.revision
+        result.update(
+            authorized=True,
+            allowed_write_tools=["cancel_reservations"],
+            cancel_target_ids=selected,
+            cancel_revision=draft.revision,
+            plan_needed=False,
+            reason="用户已从会话内待取消候选中选择目标",
+        )
+    elif re.search(r"不要取消|别取消|算了|先不取消|改约|帮我预约", query):
+        cancellations.discard(ctx.db, draft)
+    return result
+
+
+def _cancel_date(state: AgentState) -> str | None:
+    query = state.get("user_query") or ""
+    today = state.get("today") or datetime.now().strftime("%Y-%m-%d")
+    spoken = planner._extract_date(query, today)
+    month_day = re.search(r"(?<!\d)(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?", query)
+    if month_day and not spoken:
+        try:
+            year = int(today[:4])
+            candidate = datetime(year, int(month_day.group(1)), int(month_day.group(2)))
+            if candidate.date() < datetime.strptime(today, "%Y-%m-%d").date():
+                candidate = candidate.replace(year=year + 1)
+            spoken = candidate.strftime("%Y-%m-%d")
+        except ValueError:
+            return None
+    return spoken or (state.get("slots") or {}).get("date")
+
+
+def _save_cancel_candidates(ctx: AgentContext, state: AgentState, answer: str) -> None:
+    if not isinstance(ctx.db, Session) or planner.explicit_write_request(state.get("user_query") or "") != "cancel_reservation":
+        return
+    if any(item.get("tool") == "cancel_reservation" and item.get("ok") for item in state.get("tool_results") or []):
+        return
+    date = _cancel_date(state)
+    if not date:
+        return
+    rows = ctx.db.query(Reservation).filter_by(user_id=ctx.user.id, date=date, status=0).order_by(Reservation.id).all()
+    ids = [row.id for row in rows]
+    # 只有真正展示给用户的完整候选组才能成为下一轮的授权目标。
+    if 1 < len(ids) <= 20 and all(re.search(rf"(?<!\d){item}(?!\d)", answer) for item in ids):
+        cancellations.save(ctx.db, ctx.user.id, ctx.conversation_id, ids)
 
 
 def _prepare_reservation_draft(
@@ -155,7 +297,10 @@ def _prepare_reservation_draft(
         result["allowed_write_tools"] = []
         result["authorized"] = False
         return result
-    confirmation = bool(_CONFIRM_BOOKING.fullmatch(query))
+    confirmation = bool(_CONFIRM_BOOKING.fullmatch(query)) or (
+        result.get("write_followup") == "booking_confirm"
+        and bool(_BOOKING_FOLLOWUP.fullmatch(query))
+    )
     if confirmation and (current is None or current.status != "ready"):
         result["error"] = "没有可确认的预约，或预约草稿已过期；请重新说明实验室和时段。"
         result["allowed_write_tools"] = []
@@ -296,6 +441,7 @@ def node_analyze(ctx: AgentContext):
             result = planner.analyze(ctx, state)
             if not result.get("error") and isinstance(ctx.db, Session):
                 result = _prepare_reservation_draft(ctx, state, result)
+                result = _prepare_cancel_draft(ctx, state, result)
             # 轨迹是给人看的，同样不能出现裸字段名
             box["output"] = (
                 f"槽位={result['slots']}；"
@@ -595,6 +741,17 @@ def node_execute(ctx: AgentContext):
                     result = {"ok": False, "error": UNAUTHORIZED_WRITE}
                     elapsed = 0.0
                 elif (
+                    tool_name == "cancel_reservations"
+                    and (
+                        not state.get("cancel_target_ids")
+                        or sorted(args.get("reservation_ids") or []) != sorted(state["cancel_target_ids"])
+                        or not (draft := cancellations.load(ctx.db, ctx.user.id, ctx.conversation_id))
+                        or draft.revision != state.get("cancel_revision")
+                    )
+                ):
+                    result = {"ok": False, "error": "待取消目标与本轮确认内容不一致"}
+                    elapsed = 0.0
+                elif (
                     tool_name == "create_reservation"
                     and state.get("draft_target")
                     and (
@@ -771,12 +928,22 @@ def node_respond(ctx: AgentContext):
                         f"{text}\n\n⚠️ 但请注意，本轮已经有操作真实落库了：\n"
                         + "\n".join(f"· {line}" for line in facts)
                     )
+            elif state.get("cancel_pending") and state.get("cancel_candidate_details"):
+                rows = state["cancel_candidate_details"]
+                lines = [
+                    f"- 预约号 {row['reservation_id']}：{row['lab_name']}"
+                    + (f" · {row['equipment_name']}" if row.get("equipment_name") else "")
+                    + f" · {row['start_time']}–{row['end_time']}（待审核）"
+                    for row in rows
+                ]
+                text = "这一天有多条可取消的预约：\n\n" + "\n".join(lines) + "\n\n请告诉我预约号或时段；也可以说「都取消」。"
             else:
                 text = _last_ai_text(state)
             if not text:
                 text = planner.EMPTY_REPLY
 
             _save_available_draft(ctx, state)
+            _save_cancel_candidates(ctx, state, text)
             ctx.emit({"type": "token", "content": text})
             box["output"] = text
             return {"final_response": text}

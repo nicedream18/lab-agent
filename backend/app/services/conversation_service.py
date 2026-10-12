@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models.ai_conversation import AiConversation
 from app.models.ai_message import AiMessage
+from app.models.cancellation_draft import CancellationDraft
 from app.models.reservation_draft import ReservationDraft
 
 logger = logging.getLogger(__name__)
@@ -182,6 +183,10 @@ def delete_conversation(db: Session, user_id: int, conversation_id: str) -> bool
             ReservationDraft.conversation_id == conversation_id,
             ReservationDraft.user_id == user_id,
         ).delete(synchronize_session=False)
+        db.query(CancellationDraft).filter(
+            CancellationDraft.conversation_id == conversation_id,
+            CancellationDraft.user_id == user_id,
+        ).delete(synchronize_session=False)
         db.query(AiMessage).filter(AiMessage.conversation_id == conversation_id).delete(
             synchronize_session=False
         )
@@ -208,6 +213,9 @@ def prune_expired(db: Session, days: int = RETENTION_DAYS) -> int:
     db.query(ReservationDraft).filter(ReservationDraft.conversation_id.in_(ids)).delete(
         synchronize_session=False
     )
+    db.query(CancellationDraft).filter(
+        CancellationDraft.conversation_id.in_(ids)
+    ).delete(synchronize_session=False)
     db.query(AiMessage).filter(AiMessage.conversation_id.in_(ids)).delete(
         synchronize_session=False
     )

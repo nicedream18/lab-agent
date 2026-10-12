@@ -47,6 +47,7 @@ from app.models.lab import Lab
 from app.models.reservation import Reservation
 from app.schemas.reservation import ReservationCreateRequest
 from app.services import (
+    cancellation_draft_service,
     equipment_service,
     kb_service,
     lab_service,
@@ -1061,6 +1062,27 @@ def cancel_reservation(
         "status_text": "已取消",
         "message": "预约已取消，该时段已释放",
     }
+
+
+@register
+@tool(
+    description=(
+        "原子取消会话内已经展示并经用户选择的一组预约。"
+        "仅在服务端提供固定的待取消预约编号时可用；reservation_ids 必须逐一照抄。"
+        "一条不可取消则整组不取消。"
+    ),
+    extras={"label": "批量取消预约"},
+)
+def cancel_reservations(
+    ctx: Annotated[AgentContext, InjectedToolArg],
+    reservation_ids: Annotated[list[int], Field(description="服务端固定的待取消预约编号列表")],
+) -> dict:
+    draft = cancellation_draft_service.load(ctx.db, ctx.user.id, ctx.conversation_id)
+    if draft is None or ctx.cancel_revision is None:
+        return {"ok": False, "error": "待取消目标已过期，请重新查询"}
+    return cancellation_draft_service.cancel_selected(
+        ctx.db, ctx.user.id, ctx.conversation_id, ctx.cancel_revision, reservation_ids
+    )
 
 
 # ---------------------------------------------------------------------------

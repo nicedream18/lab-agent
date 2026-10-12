@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.common.exceptions import BusinessException
@@ -118,14 +119,18 @@ def get_reservation_page_list(
 
 def cancel_reservation(db: Session, current_user: User, reservation_id: int):
     """学生取消预约"""
-    item = db.query(Reservation).filter(Reservation.id == reservation_id).first()
-    if not item:
-        raise BusinessException(message="预约记录不存在")
-    if item.user_id != current_user.id:
-        raise BusinessException(message="无权限", code=403)
-    if item.status != 0:
-        raise BusinessException(message="当前状态无法取消")
-    item.status = 3
+    updated = db.execute(
+        update(Reservation)
+        .where(
+            Reservation.id == reservation_id,
+            Reservation.user_id == current_user.id,
+            Reservation.status == 0,
+        )
+        .values(status=3)
+    )
+    if updated.rowcount != 1:
+        db.rollback()
+        raise BusinessException(message="预约不存在、无权限或当前状态无法取消")
     db.commit()
 
 

@@ -423,6 +423,13 @@ def write_outcomes(results: list[dict] | None) -> list[str]:
                 f"预约已取消（编号 {result.get('reservation_id')}）："
                 f"{result.get('lab_name')} {window}"
             )
+        elif tool == "cancel_reservations":
+            lines.extend(
+                f"预约已取消（编号 {row['reservation_id']}）："
+                f"{row.get('lab_name')} {row.get('date')} "
+                f"{row.get('start_time')}-{row.get('end_time')}"
+                for row in result.get("cancelled", [])
+            )
     return lines
 
 
@@ -711,6 +718,7 @@ def analyze(ctx: AgentContext, state: AgentState) -> dict:
 
     return {
         "slots": slots,
+        "write_followup": data.get("write_followup") if data.get("write_followup") in ("cancel_all", "cancel_selected", "booking_confirm") else "none",
         "missing_slots": [str(item) for item in missing],
         "authorized": authorized,
         "allowed_write_tools": allowed_write_tools,
@@ -1249,6 +1257,7 @@ def build_agent_messages(state: AgentState) -> list[AnyMessage]:
                 query=state.get("user_query") or "",
                 slots=_slots_text(state.get("slots") or {}),
                 draft_target=_slots_text(state.get("draft_target") or {}),
+                cancel_target=json.dumps(state.get("cancel_target_ids") or [], ensure_ascii=False),
                 # 给中文描述而不是字段名：模型看到 `date` 会照抄进回复，
                 # 看到「预约日期」才会用中文问用户。
                 missing_slots=describe_missing(state.get("missing_slots")) or "（无）",
@@ -1257,6 +1266,9 @@ def build_agent_messages(state: AgentState) -> list[AnyMessage]:
                 # 快路径下它渲染成一句「本轮未启用任务计划」。
                 step_context=step_context_text(state),
                 permission=(
+                    "该日期有多条可取消预约，请使用查询工具列出所有候选编号并请用户选择；本轮不允许取消。"
+                    if state.get("cancel_pending")
+                    else
                     "已收到用户的预约指令，但目标尚不完整；提交工具暂不可用。"
                     "请只追问缺失的日期或时段，不要要求重复整个预约需求。"
                     if state.get("draft_pending")

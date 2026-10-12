@@ -80,7 +80,7 @@ STEP_TOOL_ROUNDS = 3
 #      模型在**物理上**无法调用（见 prompts.AGENT_SYSTEM_PROMPT 的工具范围段）；
 #   2. graph.node_execute 的运行时兜底拦截；
 #   3. tracer.write_tool_execution 的 is_write 落库标记。
-WRITE_TOOLS = frozenset({"create_reservation", "cancel_reservation"})
+WRITE_TOOLS = frozenset({"create_reservation", "cancel_reservation", "cancel_reservations"})
 
 # 节点 → 前端展示文案。放在这里而不是 prompts.py，
 # 因为它是「控制流元信息」，tracer 和 graph 都要用。
@@ -120,6 +120,10 @@ class AgentState(TypedDict, total=False):
     draft_target: dict[str, str]
     draft_revision: int
     draft_pending: bool
+    cancel_target_ids: list[int]
+    cancel_revision: int
+    cancel_pending: bool
+    cancel_candidate_details: list[dict[str, Any]]
 
     # ---------- 自主决策（node_agent / node_execute 读写）----------
     # 本轮的模型消息流：AIMessage（可能带 tool_calls）+ 对应的 ToolMessage。
@@ -205,6 +209,7 @@ class AgentContext:
     # 存在 ctx 上而不是模块级变量上：熔断必须是「一轮一问」的，
     # 上一轮被限流不该让下一轮也直接放弃模型。
     llm_failures: int = 0
+    cancel_revision: int | None = None
 
     def emit(self, event: dict) -> None:
         """向前端推一条流式事件；非流式场景 writer 为 None，静默丢弃。

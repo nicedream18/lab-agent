@@ -60,7 +60,7 @@ class DraftCases(unittest.TestCase):
         self.db.close()
         self.engine.dispose()
 
-    def analyze(self, query, slots=None, *, ctx=None):
+    def analyze(self, query, slots=None, *, ctx=None, model_intent="none"):
         state = {"user_query": query, "today": "2099-10-11", "history": []}
         result = {
             "slots": slots or {},
@@ -68,6 +68,7 @@ class DraftCases(unittest.TestCase):
             "authorized": False,
             "allowed_write_tools": [],
             "plan_needed": False,
+            "write_followup": model_intent,
         }
         return graph._prepare_reservation_draft(ctx or self.ctx, state, result)
 
@@ -94,6 +95,10 @@ class DraftCases(unittest.TestCase):
         confirmed = self.analyze("确认预约")
         self.assertEqual(confirmed["draft_target"], self.target)
         self.assertEqual(confirmed["allowed_write_tools"], ["create_reservation"])
+        self.assertEqual(
+            self.analyze("就按这个预约", model_intent="booking_confirm")["allowed_write_tools"],
+            ["create_reservation"],
+        )
         self.assertNotIn("draft_target", self.analyze("确认"))
         self.assertEqual(self.analyze("确认预约")["draft_target"], self.target)
         other = AgentContext(db=self.db, user=self.other, conversation_id="session-a")

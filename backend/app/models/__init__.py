@@ -13,6 +13,7 @@ from app.models.agent_tool_execution import AgentToolExecution
 from app.models.agent_trace import AgentTrace
 from app.models.ai_conversation import AiConversation
 from app.models.ai_message import AiMessage
+from app.models.cancellation_draft import CancellationDraft
 from app.models.equipment import Equipment
 from app.models.lab import Lab
 from app.models.reservation import Reservation
@@ -25,6 +26,7 @@ __all__ = [
     "AgentTrace",
     "AiConversation",
     "AiMessage",
+    "CancellationDraft",
     "Equipment",
     "Lab",
     "Reservation",
