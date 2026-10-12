@@ -49,6 +49,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import AsyncIterator
 from datetime import datetime
@@ -70,6 +71,7 @@ from app.agent.state import (
 )
 from app.agent.tracer import trace_node, write_tool_execution
 from app.models.user import User
+from app.services import reservation_draft_service as drafts
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +110,178 @@ def _bind_writer(ctx: AgentContext) -> None:
         ctx.writer = None
 
 
+_CONFIRM_BOOKING = re.compile(
+    r"^\s*(?:确认|确定|提交)(?:这条|这个|该)?(?:预约|预订|预定|订单)[。！!\s]*$"
+)
+_SLOT_REPLY = re.compile(
+    r"^(?!.*(?:吗|能否|可不可以|怎么|取消|不约|不要|别|先查|查询|帮我查|看看|查一下))(?=.*(?:今天|明天|后天|\d{1,4}月|\d{1,2}[点时:]|上午|下午|晚上))[\s\S]{1,80}$"
+)
+_EXPLICIT_RANGE = re.compile(
+    r"(?:[零一二三四五六七八九十两]{1,3}\s*[点时]|\d{1,2}\s*[点时]|\d{1,2}[:：]\d{2})"
+    r"\s*(?:到|至|[-–~])(?:今天|明天|后天|上午|下午|晚上|\s){0,8}"
+    r"(?:[零一二三四五六七八九十两]{1,3}\s*[点时]|\d{1,2}\s*[点时]|\d{1,2}[:：]\d{2})"
+)
+
+
+def _prepare_reservation_draft(
+    ctx: AgentContext, state: AgentState, result: dict
+) -> dict:
+    """只让明确预约指令、对已有草稿的补充或确认继承授权。"""
+    query = state.get("user_query") or ""
+    wanted = planner.explicit_write_request(query)
+    current = drafts.load(ctx.db, ctx.user.id, ctx.conversation_id)
+    slots = result.get("slots") or {}
+    if wanted == "cancel_reservation":
+        if current and current.status == "ready":
+            drafts.discard(ctx.db, current)
+        return result
+    if current and current.status == "submitting":
+        result["error"] = "上一条预约正在提交中，请先查询预约结果，避免重复提交。"
+        result["allowed_write_tools"] = []
+        result["authorized"] = False
+        return result
+    if current and current.status == "submitted" and wanted == "create_reservation":
+        if drafts.matches(current.target or {}, drafts.target_from(slots)):
+            result["error"] = (
+                f"这条预约已经提交（编号 {current.reservation_id}），无需重复提交。"
+            )
+            result["allowed_write_tools"] = []
+            result["authorized"] = False
+            return result
+    if current and current.status == "submitted" and _CONFIRM_BOOKING.fullmatch(query):
+        result["error"] = (
+            f"这条预约已经提交（编号 {current.reservation_id}），无需重复提交。"
+        )
+        result["allowed_write_tools"] = []
+        result["authorized"] = False
+        return result
+    confirmation = bool(_CONFIRM_BOOKING.fullmatch(query))
+    if confirmation and (current is None or current.status != "ready"):
+        result["error"] = "没有可确认的预约，或预约草稿已过期；请重新说明实验室和时段。"
+        result["allowed_write_tools"] = []
+        result["authorized"] = False
+        return result
+    missing_before = [
+        field
+        for field in ("date", "start_time", "end_time")
+        if current and not (current.target or {}).get(field)
+    ]
+    followup = bool(
+        current
+        and current.status == "ready"
+        and current.requested
+        and missing_before
+        and _SLOT_REPLY.fullmatch(query)
+    )
+    if not (wanted == "create_reservation" or confirmation or followup):
+        if (
+            current
+            and current.status == "ready"
+            and query.strip(" 。！!") not in {"确认", "好的", "可以", "嗯"}
+        ):
+            drafts.discard(ctx.db, current)
+        return result
+    if wanted != "create_reservation" and (
+        current is None or current.status != "ready"
+    ):
+        return result
+
+    target = dict(current.target or {}) if current and current.status == "ready" else {}
+    if not confirmation:
+        fresh = drafts.target_from(slots)
+        if wanted == "create_reservation":
+            if not _EXPLICIT_RANGE.search(query):
+                # 模型可能从历史或“下午”默认值补出时段；写库前必须有明确时段。
+                fresh.pop("start_time", None)
+                fresh.pop("end_time", None)
+            # 本轮明确说出的完整目标优先；不能让另一笔旧草稿污染新请求。
+            changed_target = any(
+                fresh.get(field) and target.get(field) and fresh[field] != target[field]
+                for field in ("lab_name", "date")
+            )
+            if changed_target or (
+                fresh.get("lab_name") and fresh.get("date") and fresh.get("start_time")
+            ):
+                target = fresh
+            else:
+                target.update(fresh)
+        else:
+            # 只填缺少的字段；覆盖已有日期/时段需用户明确重新下达预约指令。
+            if not target.get("date") and planner._extract_date(
+                query, state.get("today") or datetime.now().strftime("%Y-%m-%d")
+            ):
+                target["date"] = fresh.get("date", "")
+            if re.search(r"[一二三四五六七八九十两\d]{1,3}\s*(?:点|时|:|：)", query):
+                for field in ("start_time", "end_time"):
+                    if not target.get(field) and fresh.get(field):
+                        target[field] = fresh[field]
+    if not target or (confirmation and not drafts.complete(target)):
+        result["allowed_write_tools"] = []
+        result["authorized"] = False
+        return result
+    if not confirmation:
+        current = drafts.save(
+            ctx.db, ctx.user.id, ctx.conversation_id, target, requested=True
+        )
+    if current is None or current.status != "ready":
+        result["allowed_write_tools"] = []
+        result["authorized"] = False
+        return result
+    target = dict(current.target or {})
+    result["slots"] = {**slots, **target}
+    result["missing_slots"] = [
+        field for field in result.get("missing_slots", []) if field not in target
+    ]
+    # 部分指令只开放一个未完成的草稿；完整确认/补充时间才开放真正写库工具。
+    if drafts.complete(target) and (
+        wanted == "create_reservation" or confirmation or followup
+    ):
+        result["allowed_write_tools"] = ["create_reservation"]
+        result["authorized"] = True
+        result["draft_target"] = target
+        result["draft_revision"] = current.revision
+        result["plan_needed"] = False
+        result["reason"] = "已确认会话内预约目标，重新校验后提交"
+    else:
+        result["allowed_write_tools"] = []
+        result["authorized"] = False
+        result["draft_target"] = target
+        result["draft_pending"] = True
+        result["missing_slots"] = [
+            field for field in drafts.REQUIRED if not target.get(field)
+        ]
+    return result
+
+
+def _save_available_draft(ctx: AgentContext, state: AgentState) -> None:
+    """查询得到唯一明确的可用时段后，供下一轮简短确认。"""
+    if not isinstance(ctx.db, Session) or state.get("error"):
+        return
+    candidates = []
+    for item in state.get("tool_results") or []:
+        if item.get("tool") != "query_lab_availability" or not item.get("ok"):
+            continue
+        checked = (item.get("result") or {}).get("requested") or {}
+        if checked.get("available") is not True:
+            continue
+        args = item.get("args") or {}
+        target = drafts.target_from({**(state.get("slots") or {}), **args})
+        if drafts.complete(target):
+            candidates.append(target)
+    if len(candidates) != 1 or state.get("allowed_write_tools"):
+        return
+    current = drafts.load(ctx.db, ctx.user.id, ctx.conversation_id)
+    if current and current.status in ("submitting", "submitted"):
+        return
+    drafts.save(
+        ctx.db,
+        ctx.user.id,
+        ctx.conversation_id,
+        candidates[0],
+        requested=bool(current and current.requested),
+    )
+
+
 # ---------------------------------------------------------------------------
 # 节点实现
 # ---------------------------------------------------------------------------
@@ -120,6 +294,8 @@ def node_analyze(ctx: AgentContext):
             ctx, "analyze", input_text=state.get("user_query") or ""
         ) as box:
             result = planner.analyze(ctx, state)
+            if not result.get("error") and isinstance(ctx.db, Session):
+                result = _prepare_reservation_draft(ctx, state, result)
             # 轨迹是给人看的，同样不能出现裸字段名
             box["output"] = (
                 f"槽位={result['slots']}；"
@@ -418,6 +594,25 @@ def node_execute(ctx: AgentContext):
                     logger.warning("拦截未授权的写库调用：%s", tool_name)
                     result = {"ok": False, "error": UNAUTHORIZED_WRITE}
                     elapsed = 0.0
+                elif (
+                    tool_name == "create_reservation"
+                    and state.get("draft_target")
+                    and (
+                        not isinstance(ctx.db, Session)
+                        or not (
+                            draft := drafts.load(
+                                ctx.db, ctx.user.id, ctx.conversation_id
+                            )
+                        )
+                        or draft.revision != state.get("draft_revision")
+                        or not drafts.matches(state["draft_target"], args)
+                    )
+                ):
+                    result = {
+                        "ok": False,
+                        "error": "待确认预约已变更或参数不一致，请重新核对预约目标",
+                    }
+                    elapsed = 0.0
                 elif tools.is_duplicate_write(tool_name, args, results):
                     # 幂等闸门：重规划之后，模型很可能把「已经成功的那次写库」
                     # 又安排一遍。写库不可撤回，重复创建就是两条真实数据。
@@ -440,7 +635,39 @@ def node_execute(ctx: AgentContext):
                     # 还包含 emit、写审计这些开销，而审计关心的是
                     # 「这个工具本身多慢」。
                     started = time.perf_counter()
-                    result = tools.run_tool(ctx, tool_name, args)
+                    draft = None
+                    if tool_name == "create_reservation" and state.get("draft_target"):
+                        draft = drafts.load(ctx.db, ctx.user.id, ctx.conversation_id)
+                        claimed, reason = drafts.claim(ctx.db, draft, args)
+                        result = (
+                            tools.run_tool(ctx, tool_name, args)
+                            if claimed
+                            else {"ok": False, "error": reason}
+                        )
+                        if (
+                            claimed
+                            and result.get("ok")
+                            and result.get("reservation_id")
+                        ):
+                            drafts.finish(ctx.db, draft, result["reservation_id"])
+                        elif claimed and result.get("ok") is False:
+                            # 工具可能在服务层 commit 后报错；先查记录再决定能否重试。
+                            existing = drafts.find_existing(ctx.db, draft)
+                            if existing and existing.id > (
+                                draft.prior_reservation_id or 0
+                            ):
+                                drafts.finish(ctx.db, draft, existing.id)
+                                result = {
+                                    "ok": True,
+                                    "reservation_id": existing.id,
+                                    **draft.target,
+                                    "status": "待审核",
+                                    "message": "预约已提交，数据库核验成功",
+                                }
+                            else:
+                                drafts.release(ctx.db, draft)
+                    else:
+                        result = tools.run_tool(ctx, tool_name, args)
                     elapsed = (time.perf_counter() - started) * 1000
 
                 failed = result.get("ok") is False
@@ -549,6 +776,7 @@ def node_respond(ctx: AgentContext):
             if not text:
                 text = planner.EMPTY_REPLY
 
+            _save_available_draft(ctx, state)
             ctx.emit({"type": "token", "content": text})
             box["output"] = text
             return {"final_response": text}

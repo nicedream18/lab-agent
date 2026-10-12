@@ -63,7 +63,7 @@ from app.services import (
 MAX_RESULT_CHARS = 2400
 
 # 用户名下「待审核 + 已通过」预约的配额上限
-MAX_ACTIVE_RESERVATIONS = 5
+MAX_ACTIVE_RESERVATIONS = reservation_service.MAX_ACTIVE_RESERVATIONS
 
 # 预约状态码 → 中文。表里存的是 0/1/2/3，但模型和用户看到的都必须是中文，
 # 否则「status: 0」出现在 observations 里，模型很可能会把它当成失败。

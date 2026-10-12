@@ -19,7 +19,6 @@ v3 起它还多担一件事：把跑完的一轮问答写进**聊天记录**（c
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator
@@ -155,7 +154,7 @@ async def stream_agent(
         _record_turn(db, current_user, conversation_id, query, answer)
 
 
-def run_agent(db: Session, current_user: User, data: ChatRequest) -> str:
+async def run_agent(db: Session, current_user: User, data: ChatRequest) -> str:
     """非流式入口。返回值保证非空 —— 改造前这里会静默返回 None。"""
     query = _last_user_query(data)
     conversation_id = ensure_conversation_id(data)
@@ -165,16 +164,9 @@ def run_agent(db: Session, current_user: User, data: ChatRequest) -> str:
         db, current_user, conversation_id, query, history=history
     )
     try:
-        answer = asyncio.run(runner.ainvoke())
+        answer = await runner.ainvoke()
     except BusinessException:
         raise
-    except RuntimeError:
-        # 当前线程已有事件循环（被 async 上下文调用时），另起一个跑
-        loop = asyncio.new_event_loop()
-        try:
-            answer = loop.run_until_complete(runner.ainvoke())
-        finally:
-            loop.close()
     except Exception as exc:
         logger.exception("Agent 工作流执行失败")
         raise BusinessException(message="Agent 执行失败，请稍后重试") from exc

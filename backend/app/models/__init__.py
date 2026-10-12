@@ -16,6 +16,7 @@ from app.models.ai_message import AiMessage
 from app.models.equipment import Equipment
 from app.models.lab import Lab
 from app.models.reservation import Reservation
+from app.models.reservation_draft import ReservationDraft
 from app.models.user import User
 from app.models.user_memory import UserMemory
 
@@ -27,6 +28,7 @@ __all__ = [
     "Equipment",
     "Lab",
     "Reservation",
+    "ReservationDraft",
     "User",
     "UserMemory",
 ]

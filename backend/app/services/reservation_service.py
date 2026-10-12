@@ -12,16 +12,24 @@ from app.models.reservation import Reservation
 from app.models.user import User
 from app.schemas.reservation import ReservationCreateRequest, ReservationResponse
 
+MAX_ACTIVE_RESERVATIONS = 5
+
 
 def create_reservation(db: Session, current_user: User, data: ReservationCreateRequest):
     """创建预约记录"""
+    if current_user.status != 1:
+        raise BusinessException(message="账号已被禁用，无法预约")
+    if count_active_reservations(db, current_user.id) >= MAX_ACTIVE_RESERVATIONS:
+        raise BusinessException(
+            message=f"进行中的预约已达上限 {MAX_ACTIVE_RESERVATIONS} 条"
+        )
     now = datetime.now()
     current_date = now.strftime("%Y-%m-%d")
     current_time = now.strftime("%H:%M")
     if data.date < current_date:
         raise BusinessException(message="预约日期不能小于当前的日期")
-    if data.end_time < data.start_time:
-        raise BusinessException(message="预约的结束时间不能小于开始时间")
+    if data.end_time <= data.start_time:
+        raise BusinessException(message="预约的结束时间必须晚于开始时间")
     if data.date == current_date and data.start_time < current_time:
         raise BusinessException(message="预约开始时间不能小于当前的时间")
     lab = db.query(Lab).filter(Lab.id == data.lab_id).first()

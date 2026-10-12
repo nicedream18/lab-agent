@@ -2,10 +2,9 @@
 
 import unittest
 
+from evals.offline_env import configure_offline
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-
-from evals.offline_env import configure_offline
 
 configure_offline()
 
@@ -89,6 +88,23 @@ class ReservationToolCases(unittest.TestCase):
         self.assertEqual(
             (row.user_id, row.status, row.date), (self.user.id, 0, "2099-01-02")
         )
+
+    def test_booking_quota_is_enforced_even_without_permission_tool(self):
+        for day in range(1, 6):
+            self.reservation(day=f"2099-02-{day:02d}")
+        result = tools.run_tool(
+            self.ctx,
+            "create_reservation",
+            {
+                "lab_name": "计算机实验室",
+                "date": "2099-03-01",
+                "start_time": "14:00",
+                "end_time": "16:00",
+            },
+        )
+        self.assertFalse(result["ok"])
+        self.assertIn("上限", result["error"])
+        self.assertEqual(self.db.query(Reservation).count(), 5)
 
 
 if __name__ == "__main__":

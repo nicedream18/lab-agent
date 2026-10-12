@@ -1248,6 +1248,7 @@ def build_agent_messages(state: AgentState) -> list[AnyMessage]:
                 weekday=weekday,
                 query=state.get("user_query") or "",
                 slots=_slots_text(state.get("slots") or {}),
+                draft_target=_slots_text(state.get("draft_target") or {}),
                 # 给中文描述而不是字段名：模型看到 `date` 会照抄进回复，
                 # 看到「预约日期」才会用中文问用户。
                 missing_slots=describe_missing(state.get("missing_slots")) or "（无）",
@@ -1255,8 +1256,11 @@ def build_agent_messages(state: AgentState) -> list[AnyMessage]:
                 # 规划层与执行层之间唯一的信息通道：本步要做什么、建议用什么工具。
                 # 快路径下它渲染成一句「本轮未启用任务计划」。
                 step_context=step_context_text(state),
-                permission=_permission_text(
-                    set(state.get("allowed_write_tools") or [])
+                permission=(
+                    "已收到用户的预约指令，但目标尚不完整；提交工具暂不可用。"
+                    "请只追问缺失的日期或时段，不要要求重复整个预约需求。"
+                    if state.get("draft_pending")
+                    else _permission_text(set(state.get("allowed_write_tools") or []))
                 ),
             )
         )

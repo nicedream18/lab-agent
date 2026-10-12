@@ -117,6 +117,9 @@ class AgentState(TypedDict, total=False):
     authorized: bool
     # 本轮用户明确许可的具体写库工具。模型的 authorized 仅供参考，不能扩权。
     allowed_write_tools: list[str]
+    draft_target: dict[str, str]
+    draft_revision: int
+    draft_pending: bool
 
     # ---------- 自主决策（node_agent / node_execute 读写）----------
     # 本轮的模型消息流：AIMessage（可能带 tool_calls）+ 对应的 ToolMessage。

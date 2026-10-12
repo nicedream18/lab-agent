@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models.ai_conversation import AiConversation
 from app.models.ai_message import AiMessage
+from app.models.reservation_draft import ReservationDraft
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +178,10 @@ def delete_conversation(db: Session, user_id: int, conversation_id: str) -> bool
         )
         # 消息表按 conversation_id 删，不带 user_id：会话已经验过归属了，
         # 而且消息表没有唯一约束，多一个过滤条件只会让删除计划更难看懂。
+        db.query(ReservationDraft).filter(
+            ReservationDraft.conversation_id == conversation_id,
+            ReservationDraft.user_id == user_id,
+        ).delete(synchronize_session=False)
         db.query(AiMessage).filter(AiMessage.conversation_id == conversation_id).delete(
             synchronize_session=False
         )
@@ -200,6 +205,9 @@ def prune_expired(db: Session, days: int = RETENTION_DAYS) -> int:
     if not ids:
         return 0
 
+    db.query(ReservationDraft).filter(ReservationDraft.conversation_id.in_(ids)).delete(
+        synchronize_session=False
+    )
     db.query(AiMessage).filter(AiMessage.conversation_id.in_(ids)).delete(
         synchronize_session=False
     )

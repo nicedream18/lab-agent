@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+import app.models  # 注册全部表，create_all 才能创建预约草稿表
 from app.config import UPLOAD_DIR, settings
 from app.database import Base, engine
 from app.services import conversation_service, kb_service, reservation_service

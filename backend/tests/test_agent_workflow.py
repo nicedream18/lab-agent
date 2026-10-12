@@ -6,9 +6,8 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from langchain_core.messages import AIMessage
-
 from evals.offline_env import configure_offline
+from langchain_core.messages import AIMessage
 
 configure_offline()
 

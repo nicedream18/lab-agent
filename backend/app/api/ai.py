@@ -15,12 +15,12 @@ router = APIRouter(prefix="/ai", tags=["AI相关的API"])
 
 
 @router.post("/chat")
-def chat(
+async def chat(
     data: ChatRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    content = agent_service.run_agent(db, current_user, data)
+    content = await agent_service.run_agent(db, current_user, data)
     # run_agent 内部保证 conversation_id 已回填，顺带下发给前端拉取执行轨迹
     return Response.success(
         data=ChatMessage(
