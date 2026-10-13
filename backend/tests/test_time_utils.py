@@ -94,7 +94,9 @@ class ConflictCases(unittest.TestCase):
         self.db.add(self.equipment)
         self.db.commit()
 
-    def book(self, start, end, *, status=0, equipment_id=None, lab=None, date="2099-10-13"):
+    def book(
+        self, start, end, *, status=0, equipment_id=None, lab=None, date="2099-10-13"
+    ):
         item = Reservation(
             user_id=self.user.id,
             lab_id=(lab or self.lab).id,
@@ -133,7 +135,9 @@ class ConflictCases(unittest.TestCase):
 
     def test_other_days_do_not_interfere(self):
         self.book("08:00", "10:00", date="2099-10-14")
-        self.assertEqual(service.list_busy_slots(self.db, self.lab.id, "2099-10-13"), [])
+        self.assertEqual(
+            service.list_busy_slots(self.db, self.lab.id, "2099-10-13"), []
+        )
 
     def test_has_conflict_detects_overlap_and_free_slots(self):
         self.book("14:00", "16:00")

@@ -5,10 +5,10 @@ from __future__ import annotations
 import unittest
 
 import app.models  # noqa: F401
-from tests.api_harness import ApiTestCase
-
 from app.models.equipment import Equipment
 from app.models.lab import Lab
+
+from tests.api_harness import ApiTestCase
 
 LAB_LIST = "/api/lab/list"
 LAB_CREATE = "/api/lab"
@@ -25,7 +25,9 @@ class LabReadCases(ApiTestCase):
         self.closed_lab = self.make_lab("化学实验室", status=0)
 
     def test_any_logged_in_user_can_list_labs(self) -> None:
-        data = self.assert_success(self.client.get(LAB_LIST, headers=self.auth(self.student)))
+        data = self.assert_success(
+            self.client.get(LAB_LIST, headers=self.auth(self.student))
+        )
         self.assertEqual(data["total"], 2)
         self.assertIn("list", data)
 
@@ -33,13 +35,17 @@ class LabReadCases(ApiTestCase):
         self.assert_unauthorized(self.client.get(LAB_LIST))
 
     def test_list_is_newest_first(self) -> None:
-        data = self.assert_success(self.client.get(LAB_LIST, headers=self.auth(self.student)))
+        data = self.assert_success(
+            self.client.get(LAB_LIST, headers=self.auth(self.student))
+        )
         ids = [item["id"] for item in data["list"]]
         self.assertEqual(ids, sorted(ids, reverse=True))
 
     def test_keyword_filters_by_name(self) -> None:
         data = self.assert_success(
-            self.client.get(LAB_LIST + "?keywords=化学", headers=self.auth(self.student))
+            self.client.get(
+                LAB_LIST + "?keywords=化学", headers=self.auth(self.student)
+            )
         )
         self.assertEqual([item["name"] for item in data["list"]], ["化学实验室"])
 
@@ -59,7 +65,9 @@ class LabReadCases(ApiTestCase):
 
     def test_get_one_lab_by_id(self) -> None:
         data = self.assert_success(
-            self.client.get(f"/api/lab/{self.open_lab.id}", headers=self.auth(self.student))
+            self.client.get(
+                f"/api/lab/{self.open_lab.id}", headers=self.auth(self.student)
+            )
         )
         self.assertEqual(data["name"], "计算机实验室")
         self.assertEqual(data["capacity"], 30)
@@ -70,7 +78,9 @@ class LabReadCases(ApiTestCase):
         self.assert_business_error(response, "实验室不存在")
 
     def test_lab_id_must_be_an_integer(self) -> None:
-        self.assert_validation_error(self.client.get("/api/lab/abc", headers=self.auth(self.student)))
+        self.assert_validation_error(
+            self.client.get("/api/lab/abc", headers=self.auth(self.student))
+        )
 
 
 class LabWriteCases(ApiTestCase):
@@ -113,7 +123,9 @@ class LabWriteCases(ApiTestCase):
 
     def test_name_is_required(self) -> None:
         self.assert_validation_error(
-            self.client.post(LAB_CREATE, json={"capacity": 10}, headers=self.auth(self.admin))
+            self.client.post(
+                LAB_CREATE, json={"capacity": 10}, headers=self.auth(self.admin)
+            )
         )
 
     def test_admin_updates_a_lab(self) -> None:
@@ -162,7 +174,9 @@ class LabWriteCases(ApiTestCase):
 
     def test_admin_deletes_a_lab(self) -> None:
         lab = self.make_lab("临时实验室")
-        response = self.client.delete(f"/api/lab/{lab.id}", headers=self.auth(self.admin))
+        response = self.client.delete(
+            f"/api/lab/{lab.id}", headers=self.auth(self.admin)
+        )
         self.assert_success(response, message="删除成功")
         self.assertEqual(self.db.query(Lab).filter_by(id=lab.id).count(), 0)
 
@@ -172,7 +186,9 @@ class LabWriteCases(ApiTestCase):
 
     def test_a_student_cannot_delete_a_lab(self) -> None:
         lab = self.make_lab("计算机实验室")
-        response = self.client.delete(f"/api/lab/{lab.id}", headers=self.auth(self.student))
+        response = self.client.delete(
+            f"/api/lab/{lab.id}", headers=self.auth(self.student)
+        )
         self.assert_business_error(response, "无权限访问", code=403)
         self.assertEqual(self.db.query(Lab).filter_by(id=lab.id).count(), 1)
 
@@ -198,14 +214,17 @@ class EquipmentReadCases(ApiTestCase):
     def test_filtering_by_lab(self) -> None:
         data = self.assert_success(
             self.client.get(
-                f"{EQUIPMENT_LIST}?lab_id={self.lab_a.id}", headers=self.auth(self.student)
+                f"{EQUIPMENT_LIST}?lab_id={self.lab_a.id}",
+                headers=self.auth(self.student),
             )
         )
         self.assertEqual([item["name"] for item in data["list"]], ["开发主机"])
 
     def test_keyword_filters_by_device_name(self) -> None:
         data = self.assert_success(
-            self.client.get(EQUIPMENT_LIST + "?keywords=显微镜", headers=self.auth(self.student))
+            self.client.get(
+                EQUIPMENT_LIST + "?keywords=显微镜", headers=self.auth(self.student)
+            )
         )
         self.assertEqual([item["name"] for item in data["list"]], ["光学显微镜"])
 
@@ -237,7 +256,12 @@ class EquipmentWriteCases(ApiTestCase):
         data = self.assert_success(
             self.client.post(
                 EQUIPMENT_CREATE,
-                json={"lab_id": self.lab_a.id, "name": "开发主机", "spec": "i7/32G", "quantity": 5},
+                json={
+                    "lab_id": self.lab_a.id,
+                    "name": "开发主机",
+                    "spec": "i7/32G",
+                    "quantity": 5,
+                },
                 headers=self.auth(self.admin),
             )
         )
@@ -257,7 +281,9 @@ class EquipmentWriteCases(ApiTestCase):
     def test_new_device_needs_a_lab_id(self) -> None:
         self.assert_validation_error(
             self.client.post(
-                EQUIPMENT_CREATE, json={"name": "没有实验室"}, headers=self.auth(self.admin)
+                EQUIPMENT_CREATE,
+                json={"name": "没有实验室"},
+                headers=self.auth(self.admin),
             )
         )
 
@@ -287,13 +313,20 @@ class EquipmentWriteCases(ApiTestCase):
     def test_update_response_includes_the_lab_name(self) -> None:
         device = self.make_equipment(self.lab_a, "开发主机")
         data = self.assert_success(
-            self.client.put(f"/api/equipment/{device.id}", json={"quantity": 2}, headers=self.auth(self.admin))
+            self.client.put(
+                f"/api/equipment/{device.id}",
+                json={"quantity": 2},
+                headers=self.auth(self.admin),
+            )
         )
         self.assertEqual(data["lab_name"], "计算机实验室")
 
         # 对照：列表接口里同一个设备的 lab_name 是有值的
         listed = self.assert_success(
-            self.client.get(f"{EQUIPMENT_LIST}?lab_id={self.lab_a.id}", headers=self.auth(self.admin))
+            self.client.get(
+                f"{EQUIPMENT_LIST}?lab_id={self.lab_a.id}",
+                headers=self.auth(self.admin),
+            )
         )
         self.assertEqual(listed["list"][0]["lab_name"], "计算机实验室")
 
@@ -305,7 +338,9 @@ class EquipmentWriteCases(ApiTestCase):
         # 换成「显微镜」不冲突
         self.assert_success(
             self.client.put(
-                f"/api/equipment/{device.id}", json={"name": "显微镜"}, headers=self.auth(self.admin)
+                f"/api/equipment/{device.id}",
+                json={"name": "显微镜"},
+                headers=self.auth(self.admin),
             )
         )
         # 但换成 lab_a 里已经有的「打印机」就冲突了
@@ -319,7 +354,9 @@ class EquipmentWriteCases(ApiTestCase):
     def test_moving_a_device_to_a_missing_lab_reports_it(self) -> None:
         device = self.make_equipment(self.lab_a, "开发主机")
         response = self.client.put(
-            f"/api/equipment/{device.id}", json={"lab_id": 99999}, headers=self.auth(self.admin)
+            f"/api/equipment/{device.id}",
+            json={"lab_id": 99999},
+            headers=self.auth(self.admin),
         )
         self.assert_business_error(response, "实验室不存在")
 
@@ -332,12 +369,16 @@ class EquipmentWriteCases(ApiTestCase):
     def test_admin_deletes_a_device(self) -> None:
         device = self.make_equipment(self.lab_a, "开发主机")
         self.assert_success(
-            self.client.delete(f"/api/equipment/{device.id}", headers=self.auth(self.admin))
+            self.client.delete(
+                f"/api/equipment/{device.id}", headers=self.auth(self.admin)
+            )
         )
         self.assertEqual(self.db.query(Equipment).filter_by(id=device.id).count(), 0)
 
     def test_deleting_a_missing_device_reports_it(self) -> None:
-        response = self.client.delete("/api/equipment/99999", headers=self.auth(self.admin))
+        response = self.client.delete(
+            "/api/equipment/99999", headers=self.auth(self.admin)
+        )
         self.assert_business_error(response, "实验室设备不存在")
 
 

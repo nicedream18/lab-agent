@@ -8,12 +8,12 @@ import unittest
 from pathlib import Path
 
 import app.models  # noqa: F401
-from tests.api_harness import ApiTestCase
+from app import config
+from app.api import files as files_module
+from app.common.exceptions import BusinessException
 from starlette.datastructures import UploadFile
 
-from app.api import files as files_module
-from app import config
-from app.common.exceptions import BusinessException
+from tests.api_harness import ApiTestCase
 
 UPLOAD = "/api/files/upload"
 DISK_NAME_RE = re.compile(r"^\d{13}_[0-9a-f]{8}\.[a-z0-9]+$")

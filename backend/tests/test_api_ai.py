@@ -20,12 +20,12 @@ import unittest
 from unittest import mock
 
 import app.models  # noqa: F401
-from tests.api_harness import ApiTestCase
-
 from app.api.ai import _sse_line
 from app.common.exceptions import BusinessException
 from app.schemas.ai import ChatMessage, ChatRequest
 from app.services import agent_service
+
+from tests.api_harness import ApiTestCase
 
 CHAT = "/api/ai/chat"
 STREAM = "/api/ai/chat/stream"
@@ -65,7 +65,9 @@ class SseLineCases(ApiTestCase):
         line = _sse_line({"answer": "第一行\n第二行"})
         self.assertEqual(line.count("\n"), 2)  # 只有结尾那两个换行是真换行
         self.assertIn("\\n", line)  # 值里的换行是转义后的字面量
-        self.assertEqual(json.loads(line[len("data: ") : -2])["answer"], "第一行\n第二行")
+        self.assertEqual(
+            json.loads(line[len("data: ") : -2])["answer"], "第一行\n第二行"
+        )
 
 
 class LastUserQueryCases(ApiTestCase):
@@ -79,7 +81,9 @@ class LastUserQueryCases(ApiTestCase):
                 ChatMessage(role="user", content="帮我约明天的计算机实验室"),
             ]
         )
-        self.assertEqual(agent_service._last_user_query(data), "帮我约明天的计算机实验室")
+        self.assertEqual(
+            agent_service._last_user_query(data), "帮我约明天的计算机实验室"
+        )
 
     def test_it_skips_blank_user_messages(self) -> None:
         data = ChatRequest(
@@ -152,13 +156,18 @@ class HistoryCases(ApiTestCase):
 class EnsureConversationIdCases(ApiTestCase):
     def test_a_missing_id_is_generated(self) -> None:
         data = ChatRequest(messages=[ChatMessage(role="user", content="你好")])
-        self.assertTrue(CONVERSATION_ID_RE.match(agent_service.ensure_conversation_id(data)))
+        self.assertTrue(
+            CONVERSATION_ID_RE.match(agent_service.ensure_conversation_id(data))
+        )
         # 关键副作用：必须写回请求对象，路由就靠它把 id 下发给前端
-        self.assertEqual(data.conversation_id, agent_service.ensure_conversation_id(data))
+        self.assertEqual(
+            data.conversation_id, agent_service.ensure_conversation_id(data)
+        )
 
     def test_a_supplied_id_is_kept_verbatim(self) -> None:
         data = ChatRequest(
-            messages=[ChatMessage(role="user", content="你好")], conversation_id="abc123"
+            messages=[ChatMessage(role="user", content="你好")],
+            conversation_id="abc123",
         )
         self.assertEqual(agent_service.ensure_conversation_id(data), "abc123")
 
@@ -166,12 +175,15 @@ class EnsureConversationIdCases(ApiTestCase):
         data = ChatRequest(
             messages=[ChatMessage(role="user", content="你好")], conversation_id="   "
         )
-        self.assertTrue(CONVERSATION_ID_RE.match(agent_service.ensure_conversation_id(data)))
+        self.assertTrue(
+            CONVERSATION_ID_RE.match(agent_service.ensure_conversation_id(data))
+        )
 
     def test_calling_it_twice_does_not_rotate_the_id(self) -> None:
         data = ChatRequest(messages=[ChatMessage(role="user", content="你好")])
         self.assertEqual(
-            agent_service.ensure_conversation_id(data), agent_service.ensure_conversation_id(data)
+            agent_service.ensure_conversation_id(data),
+            agent_service.ensure_conversation_id(data),
         )
 
 
@@ -183,7 +195,9 @@ class ChatCases(ApiTestCase):
         self.student = self.make_user("zhangsan")
 
     def _post(self, body: dict, user=None):
-        return self.client.post(CHAT, json=body, headers=self.auth(user or self.student))
+        return self.client.post(
+            CHAT, json=body, headers=self.auth(user or self.student)
+        )
 
     def test_a_normal_answer_is_wrapped_as_an_assistant_message(self) -> None:
         async def fake_run_agent(db, current_user, data):
@@ -253,25 +267,29 @@ class ChatCases(ApiTestCase):
 
     def test_an_empty_question_is_rejected_before_any_model_call(self) -> None:
         """真实实现：`_last_user_query` 在调模型之前就抛错，所以这条用例不联网。"""
-        response = self._post({"messages": [{"role": "assistant", "content": "我先说一句"}]})
+        response = self._post(
+            {"messages": [{"role": "assistant", "content": "我先说一句"}]}
+        )
         # 「没有 id 的会话」这种请求走的路径也一样
         self.assert_business_error(response, "请输入您要对话的内容")
 
     def test_an_empty_message_list_is_also_rejected(self) -> None:
-        self.assert_business_error(
-            self._post({"messages": []}), "请输入您要对话的内容"
-        )
+        self.assert_business_error(self._post({"messages": []}), "请输入您要对话的内容")
 
     def test_chat_requires_authentication(self) -> None:
         self.assert_unauthorized(
-            self.client.post(CHAT, json={"messages": [{"role": "user", "content": "你好"}]})
+            self.client.post(
+                CHAT, json={"messages": [{"role": "user", "content": "你好"}]}
+            )
         )
 
     def test_messages_are_required(self) -> None:
         self.assert_validation_error(self._post({}))
 
     def test_each_message_needs_a_role_and_a_content(self) -> None:
-        self.assert_validation_error(self._post({"messages": [{"content": "只有内容"}]}))
+        self.assert_validation_error(
+            self._post({"messages": [{"content": "只有内容"}]})
+        )
         self.assert_validation_error(self._post({"messages": [{"role": "user"}]}))
 
     def test_unknown_message_fields_are_ignored(self) -> None:
@@ -300,7 +318,9 @@ class ChatStreamCases(ApiTestCase):
         self.student = self.make_user("zhangsan")
 
     def _post(self, body: dict, user=None):
-        return self.client.post(STREAM, json=body, headers=self.auth(user or self.student))
+        return self.client.post(
+            STREAM, json=body, headers=self.auth(user or self.student)
+        )
 
     @staticmethod
     def _frames(body: str) -> list[dict]:
@@ -320,8 +340,12 @@ class ChatStreamCases(ApiTestCase):
             {"type": "token", "text": "已经帮您"},
             {"type": "done", "answer": "已经帮您约好了"},
         ]
-        with mock.patch.object(agent_service, "stream_agent", new=_fake_stream_agent(events)):
-            response = self._post({"messages": [{"role": "user", "content": "约实验室"}]})
+        with mock.patch.object(
+            agent_service, "stream_agent", new=_fake_stream_agent(events)
+        ):
+            response = self._post(
+                {"messages": [{"role": "user", "content": "约实验室"}]}
+            )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self._frames(response.text), events)
@@ -329,10 +353,14 @@ class ChatStreamCases(ApiTestCase):
         self.assertTrue(response.text.endswith("\n\n"))
 
     def test_the_stream_headers_are_sse_friendly(self) -> None:
-        with mock.patch.object(agent_service, "stream_agent", new=_fake_stream_agent([{"type": "done"}])):
+        with mock.patch.object(
+            agent_service, "stream_agent", new=_fake_stream_agent([{"type": "done"}])
+        ):
             response = self._post({"messages": [{"role": "user", "content": "你好"}]})
 
-        self.assertTrue(response.headers["content-type"].startswith("text/event-stream"))
+        self.assertTrue(
+            response.headers["content-type"].startswith("text/event-stream")
+        )
         self.assertEqual(response.headers["cache-control"], "no-cache")
         self.assertEqual(response.headers["connection"], "keep-alive")
         # Nginx 默认会缓冲整段，不关掉的话前端看不到「逐字出现」的效果
@@ -340,7 +368,9 @@ class ChatStreamCases(ApiTestCase):
 
     def test_chinese_text_is_not_escaped_in_the_stream(self) -> None:
         with mock.patch.object(
-            agent_service, "stream_agent", new=_fake_stream_agent([{"type": "token", "text": "好的"}])
+            agent_service,
+            "stream_agent",
+            new=_fake_stream_agent([{"type": "token", "text": "好的"}]),
         ):
             response = self._post({"messages": [{"role": "user", "content": "你好"}]})
         self.assertIn("好的", response.text)
@@ -352,7 +382,9 @@ class ChatStreamCases(ApiTestCase):
         注意这时候是 HTTP 200 + 一帧 error —— 流式接口已经把状态码发出去了，
         没法再改成 500，只能把错误当成一个事件往下带。前端必须认这个形态。
         """
-        response = self._post({"messages": [{"role": "assistant", "content": "我先说一句"}]})
+        response = self._post(
+            {"messages": [{"role": "assistant", "content": "我先说一句"}]}
+        )
         self.assertEqual(response.status_code, 200)
         frames = self._frames(response.text)
         self.assertEqual(len(frames), 1)
@@ -361,7 +393,9 @@ class ChatStreamCases(ApiTestCase):
 
     def test_streaming_requires_authentication(self) -> None:
         self.assert_unauthorized(
-            self.client.post(STREAM, json={"messages": [{"role": "user", "content": "你好"}]})
+            self.client.post(
+                STREAM, json={"messages": [{"role": "user", "content": "你好"}]}
+            )
         )
 
     def test_the_stream_endpoint_takes_a_post_body_not_a_query(self) -> None:
@@ -370,7 +404,9 @@ class ChatStreamCases(ApiTestCase):
         self.assertEqual(response.status_code, 405)
 
     def test_an_empty_stream_still_returns_a_valid_response(self) -> None:
-        with mock.patch.object(agent_service, "stream_agent", new=_fake_stream_agent([])):
+        with mock.patch.object(
+            agent_service, "stream_agent", new=_fake_stream_agent([])
+        ):
             response = self._post({"messages": [{"role": "user", "content": "你好"}]})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.text, "")

@@ -41,7 +41,9 @@ class FakeCollection:
     def delete(self, where):
         self.delete_calls.append(where)
         source = where["source"]["$eq"]
-        for key in [k for k, meta in self.metas.items() if meta.get("source") == source]:
+        for key in [
+            k for k, meta in self.metas.items() if meta.get("source") == source
+        ]:
             self.docs.pop(key, None)
             self.metas.pop(key, None)
 
@@ -163,9 +165,7 @@ class SyncIndexCases(unittest.TestCase):
         self.write("a.md", "# 第一章 总则\n第一条 内容\n")
         kb_service._sync_index(self.col)
         document = self.col.docs["a.md#000"]
-        self.assertTrue(
-            document.startswith("【a.md > 第一章 总则】\n"), repr(document)
-        )
+        self.assertTrue(document.startswith("【a.md > 第一章 总则】\n"), repr(document))
 
     def test_metadata_records_source_section_and_chunk(self):
         self.write("a.md", "# 甲\n甲内容\n# 乙\n乙内容\n")

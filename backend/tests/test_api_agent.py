@@ -19,16 +19,16 @@ from datetime import datetime, timedelta
 from unittest import mock
 
 import app.models  # noqa: F401
-from tests.api_harness import ApiTestCase
-
 from app.agent import memory as agent_memory
 from app.agent.state import WRITE_TOOLS
 from app.agent.tools import TOOL_REGISTRY, tool_label
-from app.models.ai_conversation import AiConversation
-from app.models.ai_message import AiMessage
 from app.models.agent_tool_execution import AgentToolExecution
 from app.models.agent_trace import AgentTrace
+from app.models.ai_conversation import AiConversation
+from app.models.ai_message import AiMessage
 from app.models.user_memory import UserMemory
+
+from tests.api_harness import ApiTestCase
 
 TOOLS = "/api/agent/tools"
 MEMORY = "/api/agent/memory"
@@ -50,18 +50,23 @@ class TraceCases(ApiTestCase):
     def test_a_conversation_trace_is_replayed_in_execution_order(self) -> None:
         self.make_trace(self.student, self.cid, node_name="analyze", execution_time=1.5)
         self.make_trace(self.student, self.cid, node_name="plan", execution_time=2.25)
-        self.make_trace(self.student, self.cid, node_name="execute", execution_time=0.25)
+        self.make_trace(
+            self.student, self.cid, node_name="execute", execution_time=0.25
+        )
 
         data = self.assert_success(self._trace(self.cid))
         self.assertEqual(data["conversation_id"], self.cid)
         self.assertEqual(data["total"], 3)
         self.assertEqual(
-            [item["node_name"] for item in data["items"]], ["analyze", "plan", "execute"]
+            [item["node_name"] for item in data["items"]],
+            ["analyze", "plan", "execute"],
         )
         self.assertEqual(data["total_time"], 4.0)
 
     def test_item_fields_are_what_the_trace_panel_needs(self) -> None:
-        self.make_trace(self.student, self.cid, node_name="analyze", output='{"ok": true}')
+        self.make_trace(
+            self.student, self.cid, node_name="analyze", output='{"ok": true}'
+        )
         item = self.assert_success(self._trace(self.cid))["items"][0]
         self.assertEqual(item["conversation_id"], self.cid)
         self.assertEqual(item["status"], "success")
@@ -86,12 +91,15 @@ class TraceCases(ApiTestCase):
 
     def test_an_unknown_conversation_is_an_empty_trace_not_a_404(self) -> None:
         data = self.assert_success(self._trace("never-existed"))
-        self.assertEqual(data, {
-            "conversation_id": "never-existed",
-            "total": 0,
-            "total_time": 0.0,
-            "items": [],
-        })
+        self.assertEqual(
+            data,
+            {
+                "conversation_id": "never-existed",
+                "total": 0,
+                "total_time": 0.0,
+                "items": [],
+            },
+        )
 
     def test_a_failed_node_still_shows_up(self) -> None:
         """失败也要能回放 —— 这正是不用「只存好结果」的原因。"""
@@ -120,10 +128,18 @@ class ToolExecutionCases(ApiTestCase):
 
     def test_a_tool_call_is_replayed_with_its_audit_counters(self) -> None:
         self.make_tool_execution(
-            self.student, self.cid, tool_name="create_reservation", is_write=1, execution_time=1.25
+            self.student,
+            self.cid,
+            tool_name="create_reservation",
+            is_write=1,
+            execution_time=1.25,
         )
         self.make_tool_execution(
-            self.student, self.cid, tool_name="query_user_reservations", is_write=0, execution_time=0.75
+            self.student,
+            self.cid,
+            tool_name="query_user_reservations",
+            is_write=0,
+            execution_time=0.75,
         )
         self.make_tool_execution(
             self.student,
@@ -145,7 +161,9 @@ class ToolExecutionCases(ApiTestCase):
         )
 
     def test_item_fields_are_what_the_audit_panel_needs(self) -> None:
-        self.make_tool_execution(self.student, self.cid, tool_name="get_today", is_write=0)
+        self.make_tool_execution(
+            self.student, self.cid, tool_name="get_today", is_write=0
+        )
         item = self.assert_success(self._executions(self.cid))["items"][0]
         self.assertEqual(item["tool_name"], "get_today")
         self.assertEqual(item["tool_label"], "get_today")
@@ -163,7 +181,9 @@ class ToolExecutionCases(ApiTestCase):
         self.assertEqual(data["items"], [])
 
     def test_another_users_tool_calls_are_invisible(self) -> None:
-        self.make_tool_execution(self.other, self.cid, tool_name="create_reservation", is_write=1)
+        self.make_tool_execution(
+            self.other, self.cid, tool_name="create_reservation", is_write=1
+        )
         data = self.assert_success(self._executions(self.cid))
         self.assertEqual(data["total"], 0)
         self.assertEqual(data["write_total"], 0)
@@ -172,7 +192,9 @@ class ToolExecutionCases(ApiTestCase):
         self.assert_validation_error(self._executions("x" * 65))
 
     def test_tool_executions_require_authentication(self) -> None:
-        self.assert_unauthorized(self.client.get(f"/api/agent/tool-executions/{self.cid}"))
+        self.assert_unauthorized(
+            self.client.get(f"/api/agent/tool-executions/{self.cid}")
+        )
 
 
 class ToolboxCases(ApiTestCase):
@@ -231,7 +253,9 @@ class MemoryReadCases(ApiTestCase):
         self.make_memory(self.student, "中等", hit_count=5)
 
         data = self.assert_success(self._memory())
-        self.assertEqual([item["content"] for item in data], ["最常用", "中等", "很少用到"])
+        self.assertEqual(
+            [item["content"] for item in data], ["最常用", "中等", "很少用到"]
+        )
 
     def test_same_hit_count_falls_back_to_newest_first(self) -> None:
         self.make_memory(self.student, "先写的", hit_count=3)
@@ -259,7 +283,9 @@ class MemoryReadCases(ApiTestCase):
         self.assertEqual(data[0]["content"], "第54条")  # hit_count 最高的那条还在
 
     def test_memory_fields(self) -> None:
-        self.make_memory(self.student, "喜欢用上午的时间段", memory_type="preference", hit_count=4)
+        self.make_memory(
+            self.student, "喜欢用上午的时间段", memory_type="preference", hit_count=4
+        )
         item = self.assert_success(self._memory())[0]
         self.assertEqual(item["content"], "喜欢用上午的时间段")
         self.assertEqual(item["memory_type"], "preference")
@@ -278,7 +304,9 @@ class MemoryWriteCases(ApiTestCase):
 
     def test_adding_a_memory(self) -> None:
         response = self.client.post(
-            MEMORY, json={"content": "我习惯约早上九点"}, headers=self.auth(self.student)
+            MEMORY,
+            json={"content": "我习惯约早上九点"},
+            headers=self.auth(self.student),
         )
         body = self.assert_success(response, message="已记住")
         self.assertEqual(body["content"], "我习惯约早上九点")
@@ -317,10 +345,18 @@ class MemoryWriteCases(ApiTestCase):
     def test_writing_the_same_content_again_only_bumps_the_hit_count(self) -> None:
         """`remember` 按内容去重：重复写不新增行，只把 hit_count 加一。"""
         first = self.assert_success(
-            self.client.post(MEMORY, json={"content": "我习惯约早上"}, headers=self.auth(self.student))
+            self.client.post(
+                MEMORY,
+                json={"content": "我习惯约早上"},
+                headers=self.auth(self.student),
+            )
         )
         second = self.assert_success(
-            self.client.post(MEMORY, json={"content": "  我习惯约早上  "}, headers=self.auth(self.student))
+            self.client.post(
+                MEMORY,
+                json={"content": "  我习惯约早上  "},
+                headers=self.auth(self.student),
+            )
         )
         self.assertEqual(second["id"], first["id"])
         self.assertEqual(second["hit_count"], first["hit_count"] + 1)
@@ -350,8 +386,12 @@ class MemoryWriteCases(ApiTestCase):
         self.assertEqual(self.db.query(UserMemory).count(), 0)
 
     def test_a_new_memory_belongs_to_the_caller(self) -> None:
-        self.client.post(MEMORY, json={"content": "我的"}, headers=self.auth(self.student))
-        self.client.post(MEMORY, json={"content": "他的"}, headers=self.auth(self.other))
+        self.client.post(
+            MEMORY, json={"content": "我的"}, headers=self.auth(self.student)
+        )
+        self.client.post(
+            MEMORY, json={"content": "他的"}, headers=self.auth(self.other)
+        )
         mine = self.assert_success(
             self.client.get(MEMORY, headers=self.auth(self.student))
         )
@@ -362,18 +402,24 @@ class MemoryWriteCases(ApiTestCase):
 
     def test_forgetting_my_own_memory(self) -> None:
         row = self.make_memory(self.student, "不该记的")
-        response = self.client.delete(f"{MEMORY}/{row.id}", headers=self.auth(self.student))
+        response = self.client.delete(
+            f"{MEMORY}/{row.id}", headers=self.auth(self.student)
+        )
         self.assert_success(response, message="已忘记")
         self.assertEqual(self.db.query(UserMemory).filter_by(id=row.id).count(), 0)
 
     def test_forgetting_a_missing_memory_is_a_404_business_code(self) -> None:
-        response = self.client.delete(f"{MEMORY}/99999", headers=self.auth(self.student))
+        response = self.client.delete(
+            f"{MEMORY}/99999", headers=self.auth(self.student)
+        )
         self.assert_business_error(response, "记忆不存在", code=404)
 
     def test_someone_elses_memory_looks_exactly_like_a_missing_one(self) -> None:
         """不给「这条记忆存在，但不是你的」这种可探测的差别。"""
         row = self.make_memory(self.other, "别人的记忆")
-        response = self.client.delete(f"{MEMORY}/{row.id}", headers=self.auth(self.student))
+        response = self.client.delete(
+            f"{MEMORY}/{row.id}", headers=self.auth(self.student)
+        )
         self.assert_business_error(response, "记忆不存在", code=404)
         self.assertEqual(self.db.query(UserMemory).filter_by(id=row.id).count(), 1)
 
@@ -452,7 +498,9 @@ class ConversationCases(ApiTestCase):
     # ------------------------------------------------------------------
 
     def test_a_conversation_can_be_reopened_with_all_its_messages(self) -> None:
-        self.make_conversation(self.student, "c1", title="帮我约实验室", message_count=2)
+        self.make_conversation(
+            self.student, "c1", title="帮我约实验室", message_count=2
+        )
         self.make_message(self.student, "c1", "user", "帮我约明天的计算机实验室")
         self.make_message(self.student, "c1", "assistant", "好的，已为您预约上午 9 点")
 
@@ -495,8 +543,12 @@ class ConversationCases(ApiTestCase):
 
         body = self.assert_success(self._delete("c1"), message="已删除")
         self.assertEqual(body, {"deleted": True})
-        self.assertEqual(self.db.query(AiConversation).filter_by(conversation_id="c1").count(), 0)
-        self.assertEqual(self.db.query(AiMessage).filter_by(conversation_id="c1").count(), 0)
+        self.assertEqual(
+            self.db.query(AiConversation).filter_by(conversation_id="c1").count(), 0
+        )
+        self.assertEqual(
+            self.db.query(AiMessage).filter_by(conversation_id="c1").count(), 0
+        )
 
     def test_deleting_twice_is_idempotent_not_an_error(self) -> None:
         self.make_conversation(self.student, "c1")
@@ -516,10 +568,14 @@ class ConversationCases(ApiTestCase):
         self.assertEqual(
             self.db.query(AiConversation).filter_by(conversation_id="c1").count(), 1
         )
-        self.assertEqual(self.db.query(AiMessage).filter_by(conversation_id="c1").count(), 1)
+        self.assertEqual(
+            self.db.query(AiMessage).filter_by(conversation_id="c1").count(), 1
+        )
         self.assertEqual(self.db.query(AiMessage).count(), 1)
 
-    def test_deleting_a_conversation_never_touches_other_tables_of_other_users(self) -> None:
+    def test_deleting_a_conversation_never_touches_other_tables_of_other_users(
+        self,
+    ) -> None:
         """删除只按 conversation_id + user_id 走，别把别人的轨迹顺手清了。"""
         self.make_conversation(self.other, "c-other")
         their_trace = self.make_trace(self.other, "c-other")
@@ -527,7 +583,9 @@ class ConversationCases(ApiTestCase):
         self.make_conversation(self.student, "c-mine")
         self.assert_success(self._delete("c-mine"))
 
-        self.assertEqual(self.db.query(AgentTrace).filter_by(id=their_trace.id).count(), 1)
+        self.assertEqual(
+            self.db.query(AgentTrace).filter_by(id=their_trace.id).count(), 1
+        )
         self.assertEqual(
             self.db.query(AgentToolExecution).filter_by(id=their_call.id).count(), 1
         )
@@ -535,7 +593,9 @@ class ConversationCases(ApiTestCase):
     def test_deleting_requires_authentication(self) -> None:
         self.make_conversation(self.student, "c1")
         self.assert_unauthorized(self.client.delete(f"{CONVERSATIONS}/c1"))
-        self.assertEqual(self.db.query(AiConversation).filter_by(conversation_id="c1").count(), 1)
+        self.assertEqual(
+            self.db.query(AiConversation).filter_by(conversation_id="c1").count(), 1
+        )
 
 
 if __name__ == "__main__":

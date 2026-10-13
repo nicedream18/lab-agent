@@ -10,10 +10,10 @@ from __future__ import annotations
 import unittest
 
 import app.models  # noqa: F401
-from tests.api_harness import ApiTestCase
-
 from app.models.user import User
 from app.utils.password import hash_password, verify_password
+
+from tests.api_harness import ApiTestCase
 
 LOGIN = "/api/auth/login"
 REGISTER = "/api/auth/register"
@@ -27,7 +27,9 @@ class LoginCases(ApiTestCase):
 
     def test_login_returns_a_token_and_the_user_profile(self) -> None:
         data = self.assert_success(
-            self.client.post(LOGIN, json={"username": "zhangsan", "password": PASSWORD}),
+            self.client.post(
+                LOGIN, json={"username": "zhangsan", "password": PASSWORD}
+            ),
             message="登录成功",
         )
         self.assertTrue(data["token"])
@@ -49,14 +51,16 @@ class LoginCases(ApiTestCase):
         self.assertNotIn("password", data["user"])
 
     def test_overlong_password_is_a_validation_error(self) -> None:
-        self.assert_validation_error(self.client.post(
-            LOGIN, json={"username": "zhangsan", "password": "a" * 73}
-        ))
+        self.assert_validation_error(
+            self.client.post(LOGIN, json={"username": "zhangsan", "password": "a" * 73})
+        )
 
     def test_password_limit_counts_utf8_bytes(self) -> None:
-        self.assert_validation_error(self.client.post(
-            LOGIN, json={"username": "zhangsan", "password": "密" * 25}
-        ))
+        self.assert_validation_error(
+            self.client.post(
+                LOGIN, json={"username": "zhangsan", "password": "密" * 25}
+            )
+        )
 
     def test_wrong_password_and_unknown_username_share_one_message(self) -> None:
         """两种失败必须一模一样，否则接口就成了账号枚举器。"""
@@ -72,7 +76,9 @@ class LoginCases(ApiTestCase):
 
     def test_disabled_account_cannot_log_in(self) -> None:
         self.make_user("banned", password=PASSWORD, status=0)
-        response = self.client.post(LOGIN, json={"username": "banned", "password": PASSWORD})
+        response = self.client.post(
+            LOGIN, json={"username": "banned", "password": PASSWORD}
+        )
         self.assert_business_error(response, "账号被禁用")
 
     def test_username_is_case_sensitive(self) -> None:
@@ -83,7 +89,9 @@ class LoginCases(ApiTestCase):
 
     def test_missing_fields_are_rejected_before_hitting_the_service(self) -> None:
         self.assert_validation_error(self.client.post(LOGIN, json={}))
-        self.assert_validation_error(self.client.post(LOGIN, json={"username": "zhangsan"}))
+        self.assert_validation_error(
+            self.client.post(LOGIN, json={"username": "zhangsan"})
+        )
 
     def test_an_admin_logs_in_and_can_reach_admin_routes(self) -> None:
         admin = self.make_admin(password=PASSWORD)
@@ -110,7 +118,9 @@ class RegisterCases(ApiTestCase):
         )
         self.assertIsNone(data)
 
-    def test_registered_account_is_a_normal_student_with_a_hashed_password(self) -> None:
+    def test_registered_account_is_a_normal_student_with_a_hashed_password(
+        self,
+    ) -> None:
         self.client.post(
             REGISTER,
             json={"username": "lisi", "password": PASSWORD, "name": "李四"},
@@ -145,13 +155,19 @@ class RegisterCases(ApiTestCase):
         self.assert_validation_error(
             self.client.post(REGISTER, json={"username": "no-password"})
         )
-        self.assertEqual(self.db.query(User).filter_by(username="no-password").count(), 0)
+        self.assertEqual(
+            self.db.query(User).filter_by(username="no-password").count(), 0
+        )
 
     def test_overlong_password_is_rejected_without_creating_an_account(self) -> None:
-        self.assert_validation_error(self.client.post(
-            REGISTER, json={"username": "long-password", "password": "密" * 25}
-        ))
-        self.assertEqual(self.db.query(User).filter_by(username="long-password").count(), 0)
+        self.assert_validation_error(
+            self.client.post(
+                REGISTER, json={"username": "long-password", "password": "密" * 25}
+            )
+        )
+        self.assertEqual(
+            self.db.query(User).filter_by(username="long-password").count(), 0
+        )
 
     def test_then_that_account_can_log_in(self) -> None:
         self.assert_success(

@@ -162,9 +162,7 @@ class LoadMemoryContextCases(unittest.TestCase):
         context = memory.load_memory_context(self.db, self.user.id)
         self.assertIn("## 用户画像", context)
         self.assertIn("## 已沉淀的偏好", context)
-        self.assertLess(
-            context.index("## 用户画像"), context.index("## 已沉淀的偏好")
-        )
+        self.assertLess(context.index("## 用户画像"), context.index("## 已沉淀的偏好"))
         self.assertIn("- 习惯用开发主机", context)
 
     def test_reading_preferences_bumps_hit_count(self):

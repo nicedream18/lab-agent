@@ -17,13 +17,13 @@ from evals.offline_env import configure_offline
 configure_offline()
 
 import jwt  # noqa: E402
-from fastapi import HTTPException  # noqa: E402
-
 from app.config import settings  # noqa: E402
 from app.dependencies.auth import get_current_admin, get_current_user  # noqa: E402
 from app.models.user import User  # noqa: E402
 from app.utils.jwt import create_access_token, decode_access_token  # noqa: E402
 from app.utils.password import hash_password, verify_password  # noqa: E402
+from fastapi import HTTPException  # noqa: E402
+
 from tests.api_harness import ApiTestCase  # noqa: E402
 
 
@@ -159,7 +159,9 @@ class JwtUtilsCases(unittest.TestCase):
     def test_decoding_with_a_wrong_secret_fails(self) -> None:
         with self.assertRaises(jwt.InvalidSignatureError):
             jwt.decode(
-                create_access_token(1), "not-the-secret", algorithms=[settings.JWT_ALGORITHM]
+                create_access_token(1),
+                "not-the-secret",
+                algorithms=[settings.JWT_ALGORITHM],
             )
 
     def test_the_algorithm_is_pinned_so_none_tokens_are_refused(self) -> None:

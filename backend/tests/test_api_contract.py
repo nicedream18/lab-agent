@@ -14,12 +14,12 @@ import unittest
 from unittest.mock import patch
 
 import app.models  # noqa: F401
-from tests.api_harness import ApiTestCase
-
 from app.api import api as api_router
 from app.common.exceptions import global_excpetion_hadler
 from app.main import app as application
 from app.models.user import User
+
+from tests.api_harness import ApiTestCase
 
 # 有意不加鉴权的公开接口：登录、注册、文件上传。
 PUBLIC_PATHS = {"/api/auth/login", "/api/auth/register", "/api/files/upload"}
@@ -74,7 +74,9 @@ class RouteContractCases(ApiTestCase):
         # 防呆：上面的循环要是因为路径拼错一条都没跑到，这条会失败
         self.assertGreater(len(checked), 20)
 
-    def test_the_three_intentionally_public_routes_are_reachable_without_token(self) -> None:
+    def test_the_three_intentionally_public_routes_are_reachable_without_token(
+        self,
+    ) -> None:
         response = self.client.post(
             "/api/auth/register",
             json={"username": "open-route", "password": "pw-123456"},
@@ -133,12 +135,16 @@ class ExceptionHandlerCases(ApiTestCase):
 
     def test_business_exception_returns_http_200_with_code_500(self) -> None:
         # 实验室不存在 → BusinessException，默认 code=500，HTTP 仍是 200
-        response = self.client.put("/api/lab/99999", json={}, headers=self.auth(self.admin))
+        response = self.client.put(
+            "/api/lab/99999", json={}, headers=self.auth(self.admin)
+        )
         self.assert_business_error(response, "实验室不存在")
 
     def test_business_exception_can_carry_a_custom_code(self) -> None:
         # 记忆不存在 → BusinessException(code=404)，HTTP 依然是 200
-        response = self.client.delete("/api/agent/memory/99999", headers=self.auth(self.student))
+        response = self.client.delete(
+            "/api/agent/memory/99999", headers=self.auth(self.student)
+        )
         self.assert_business_error(response, "记忆不存在", code=404)
 
     def test_validation_error_is_422_with_a_fixed_message(self) -> None:
@@ -162,7 +168,9 @@ class ExceptionHandlerCases(ApiTestCase):
             "app.services.lab_service.get_lab_page_list",
             side_effect=RuntimeError("数据库连接池炸了"),
         ):
-            response = self.raw_client().get("/api/lab/list", headers=self.auth(self.student))
+            response = self.raw_client().get(
+                "/api/lab/list", headers=self.auth(self.student)
+            )
 
         self.assertEqual(response.status_code, 500, response.text)
         body = response.json()
@@ -170,7 +178,9 @@ class ExceptionHandlerCases(ApiTestCase):
         self.assertEqual(body["message"], "服务器内部错误", body)
         self.assertNotIn("数据库连接池炸了", response.text)
 
-    def test_the_projects_global_handler_is_the_one_that_owns_the_500_branch(self) -> None:
+    def test_the_projects_global_handler_is_the_one_that_owns_the_500_branch(
+        self,
+    ) -> None:
         """Exception 这个兜底必须指向项目自己的处理器。
 
         FastAPI 构建中间件栈时会把 exception_handlers 里 Exception/500 那一项
@@ -178,7 +188,9 @@ class ExceptionHandlerCases(ApiTestCase):
         会覆盖先注册的 —— 万一有人往 main.py 后面再塞一个 Exception 处理器，
         这个断言就会失败，从而暴露「兜底被换掉了」。
         """
-        self.assertIs(application.exception_handlers[Exception], global_excpetion_hadler)
+        self.assertIs(
+            application.exception_handlers[Exception], global_excpetion_hadler
+        )
         self.assertIsNot(application.exception_handlers[Exception], None)
 
     def test_business_handler_owns_the_business_exception_branch(self) -> None:
@@ -188,13 +200,13 @@ class ExceptionHandlerCases(ApiTestCase):
         )
 
         self.assertIs(
-            application.exception_handlers[BusinessException], bussiness_excpetion_hadler
+            application.exception_handlers[BusinessException],
+            bussiness_excpetion_hadler,
         )
 
     def test_validation_handler_owns_the_request_validation_branch(self) -> None:
-        from fastapi.exceptions import RequestValidationError
-
         from app.common.exceptions import validation_excpetion_hadler
+        from fastapi.exceptions import RequestValidationError
 
         self.assertIs(
             application.exception_handlers[RequestValidationError],
@@ -204,12 +216,17 @@ class ExceptionHandlerCases(ApiTestCase):
     def test_unknown_path_and_method_use_the_unified_envelope(self) -> None:
         not_found = self.client.get("/api/does-not-exist")
         self.assertEqual(not_found.status_code, 404, not_found.text)
-        self.assertEqual(not_found.json(), {"code": 404, "message": "Not Found", "data": None})
+        self.assertEqual(
+            not_found.json(), {"code": 404, "message": "Not Found", "data": None}
+        )
 
         # 方法不对（GET 一个 POST-only 的接口）也走统一响应体。
         wrong_method = self.client.get("/api/auth/login")
         self.assertEqual(wrong_method.status_code, 405, wrong_method.text)
-        self.assertEqual(wrong_method.json(), {"code": 405, "message": "Method Not Allowed", "data": None})
+        self.assertEqual(
+            wrong_method.json(),
+            {"code": 405, "message": "Method Not Allowed", "data": None},
+        )
 
 
 class CorsCases(ApiTestCase):
@@ -222,19 +239,25 @@ class CorsCases(ApiTestCase):
             },
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.headers["access-control-allow-origin"], ALLOWED_ORIGIN)
+        self.assertEqual(
+            response.headers["access-control-allow-origin"], ALLOWED_ORIGIN
+        )
         self.assertEqual(response.headers["access-control-allow-credentials"], "true")
         self.assertIn("GET", response.headers["access-control-allow-methods"])
 
     def test_an_unknown_origin_gets_no_cors_header(self) -> None:
-        response = self.client.get("/api/lab/list", headers={"Origin": "http://evil.example"})
+        response = self.client.get(
+            "/api/lab/list", headers={"Origin": "http://evil.example"}
+        )
         self.assertNotIn("access-control-allow-origin", response.headers)
 
     def test_error_responses_also_carry_cors_headers(self) -> None:
         # 401 也必须带 CORS 头，否则前端连错误码都读不到，只会看到一个跨域报错
         response = self.client.get("/api/lab/list", headers={"Origin": ALLOWED_ORIGIN})
         self.assert_unauthorized(response, "Not authenticated")
-        self.assertEqual(response.headers["access-control-allow-origin"], ALLOWED_ORIGIN)
+        self.assertEqual(
+            response.headers["access-control-allow-origin"], ALLOWED_ORIGIN
+        )
 
 
 class SchemaCases(ApiTestCase):

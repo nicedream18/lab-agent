@@ -12,10 +12,10 @@ from __future__ import annotations
 import unittest
 
 import app.models  # noqa: F401
-from tests.api_harness import ApiTestCase
-
 from app.models.user import User
 from app.utils.password import verify_password
+
+from tests.api_harness import ApiTestCase
 
 PASSWORD = "pw-123456"
 INFO = "/api/user/info"
@@ -31,7 +31,9 @@ class ProfileCases(ApiTestCase):
         self.student = self.make_user("zhangsan", password=PASSWORD, name="张三")
 
     def test_info_returns_the_current_user(self) -> None:
-        data = self.assert_success(self.client.get(INFO, headers=self.auth(self.student)))
+        data = self.assert_success(
+            self.client.get(INFO, headers=self.auth(self.student))
+        )
         self.assertEqual(data["id"], self.student.id)
         self.assertEqual(data["username"], "zhangsan")
         self.assertEqual(data["name"], "张三")
@@ -54,7 +56,11 @@ class UpdateProfileCases(ApiTestCase):
         data = self.assert_success(
             self.client.put(
                 UPDATE_ME,
-                json={"name": "张三丰", "email": "z@example.com", "phone": "13800000000"},
+                json={
+                    "name": "张三丰",
+                    "email": "z@example.com",
+                    "phone": "13800000000",
+                },
                 headers=self.auth(self.student),
             )
         )
@@ -67,7 +73,9 @@ class UpdateProfileCases(ApiTestCase):
 
     def test_omitted_fields_are_left_untouched(self) -> None:
         """exclude_none=True：没传的字段保持原值，而不是被写成 NULL。"""
-        self.client.put(UPDATE_ME, json={"name": "只改名字"}, headers=self.auth(self.student))
+        self.client.put(
+            UPDATE_ME, json={"name": "只改名字"}, headers=self.auth(self.student)
+        )
         self.reload(self.student)
         self.assertEqual(self.student.name, "只改名字")
         self.assertEqual(self.student.email, None)
@@ -107,7 +115,9 @@ class UpdateProfileCases(ApiTestCase):
 
     def test_validation_error_for_a_wrong_type(self) -> None:
         self.assert_validation_error(
-            self.client.put(UPDATE_ME, json={"status": "不是数字"}, headers=self.auth(self.student))
+            self.client.put(
+                UPDATE_ME, json={"status": "不是数字"}, headers=self.auth(self.student)
+            )
         )
 
 
@@ -143,11 +153,13 @@ class ChangePasswordCases(ApiTestCase):
         )
 
     def test_overlong_new_password_is_a_validation_error(self) -> None:
-        self.assert_validation_error(self.client.put(
-            CHANGE_PASSWORD,
-            json={"old_password": PASSWORD, "new_password": "a" * 73},
-            headers=self.auth(self.student),
-        ))
+        self.assert_validation_error(
+            self.client.put(
+                CHANGE_PASSWORD,
+                json={"old_password": PASSWORD, "new_password": "a" * 73},
+                headers=self.auth(self.student),
+            )
+        )
         self.reload(self.student)
         self.assertTrue(verify_password(PASSWORD, self.student.password))
 
@@ -207,7 +219,9 @@ class AdminUserListCases(ApiTestCase):
         by_username = self.assert_success(
             self.client.get(LIST + "?keywords=zhang", headers=self.auth(self.admin))
         )
-        self.assertEqual([item["username"] for item in by_username["list"]], ["zhangsan"])
+        self.assertEqual(
+            [item["username"] for item in by_username["list"]], ["zhangsan"]
+        )
 
         by_name = self.assert_success(
             self.client.get(LIST + "?keywords=李四", headers=self.auth(self.admin))
@@ -261,11 +275,13 @@ class AdminUserWriteCases(ApiTestCase):
         self.assertTrue(verify_password("123", created.password))
 
     def test_admin_cannot_create_a_user_with_an_overlong_password(self) -> None:
-        self.assert_validation_error(self.client.post(
-            CREATE,
-            json={"username": "too-long", "password": "a" * 73},
-            headers=self.auth(self.admin),
-        ))
+        self.assert_validation_error(
+            self.client.post(
+                CREATE,
+                json={"username": "too-long", "password": "a" * 73},
+                headers=self.auth(self.admin),
+            )
+        )
         self.assertEqual(self.db.query(User).filter_by(username="too-long").count(), 0)
 
     def test_creating_a_duplicate_username_is_rejected(self) -> None:
@@ -311,9 +327,13 @@ class AdminUserWriteCases(ApiTestCase):
 
     def test_admin_deletes_a_user(self) -> None:
         target = self.make_user("tobedeleted", password=PASSWORD)
-        response = self.client.delete(f"/api/user/{target.id}", headers=self.auth(self.admin))
+        response = self.client.delete(
+            f"/api/user/{target.id}", headers=self.auth(self.admin)
+        )
         self.assert_success(response)
-        self.assertEqual(self.db.query(User).filter_by(username="tobedeleted").count(), 0)
+        self.assertEqual(
+            self.db.query(User).filter_by(username="tobedeleted").count(), 0
+        )
 
     def test_admin_cannot_delete_their_own_account(self) -> None:
         """防呆：删掉自己会立刻把整个后台锁死。"""

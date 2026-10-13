@@ -17,10 +17,10 @@ import unittest
 from datetime import datetime, timedelta
 
 import app.models  # noqa: F401
-from tests.api_harness import ApiTestCase
-
 from app.models.reservation import Reservation
 from app.services.reservation_service import MAX_ACTIVE_RESERVATIONS
+
+from tests.api_harness import ApiTestCase
 
 CREATE = "/api/reservation"
 LIST = "/api/reservation/list"
@@ -57,7 +57,11 @@ class CreateReservationCases(ApiTestCase):
 
     def test_a_reservation_is_created_pending_review(self) -> None:
         data = self.assert_success(
-            self.client.post(CREATE, json=self._payload(remark="做实验"), headers=self.auth(self.student))
+            self.client.post(
+                CREATE,
+                json=self._payload(remark="做实验"),
+                headers=self.auth(self.student),
+            )
         )
         self.assertIsNone(data)  # 只回一句「请求成功」，前端靠列表刷新
 
@@ -105,19 +109,25 @@ class CreateReservationCases(ApiTestCase):
     def test_a_closed_lab_cannot_be_reserved(self) -> None:
         closed = self.make_lab("装修中的实验室", status=0)
         response = self.client.post(
-            CREATE, json=self._payload(lab_id=closed.id), headers=self.auth(self.student)
+            CREATE,
+            json=self._payload(lab_id=closed.id),
+            headers=self.auth(self.student),
         )
         self.assert_business_error(response, "实验室已关闭")
 
     def test_cannot_book_before_the_lab_opens(self) -> None:
         response = self.client.post(
-            CREATE, json=self._payload(start_time="07:00", end_time="08:30"), headers=self.auth(self.student)
+            CREATE,
+            json=self._payload(start_time="07:00", end_time="08:30"),
+            headers=self.auth(self.student),
         )
         self.assert_business_error(response, "预约时间不能早于实验室的开放时间")
 
     def test_cannot_book_after_the_lab_closes(self) -> None:
         response = self.client.post(
-            CREATE, json=self._payload(start_time="19:30", end_time="21:00"), headers=self.auth(self.student)
+            CREATE,
+            json=self._payload(start_time="19:30", end_time="21:00"),
+            headers=self.auth(self.student),
         )
         self.assert_business_error(response, "预约时间不能晚于实验室的关闭时间")
 
@@ -127,14 +137,18 @@ class CreateReservationCases(ApiTestCase):
         self.assert_success(
             self.client.post(
                 CREATE,
-                json=self._payload(lab_id=anytime.id, start_time="00:30", end_time="23:30"),
+                json=self._payload(
+                    lab_id=anytime.id, start_time="00:30", end_time="23:30"
+                ),
                 headers=self.auth(self.student),
             )
         )
 
     def test_an_overlapping_slot_is_rejected(self) -> None:
         self.assert_success(
-            self.client.post(CREATE, json=self._payload(), headers=self.auth(self.student))
+            self.client.post(
+                CREATE, json=self._payload(), headers=self.auth(self.student)
+            )
         )
         other = self.make_user("lisi")
         response = self.client.post(
@@ -147,21 +161,31 @@ class CreateReservationCases(ApiTestCase):
     def test_touching_endpoints_do_not_conflict(self) -> None:
         """[start, end) 左闭右开：上一场 11:00 结束，下一场 11:00 开始不算冲突。"""
         self.assert_success(
-            self.client.post(CREATE, json=self._payload(), headers=self.auth(self.student))
+            self.client.post(
+                CREATE, json=self._payload(), headers=self.auth(self.student)
+            )
         )
         self.assert_success(
             self.client.post(
-                CREATE, json=self._payload(start_time="11:00", end_time="13:00"), headers=self.auth(self.student)
+                CREATE,
+                json=self._payload(start_time="11:00", end_time="13:00"),
+                headers=self.auth(self.student),
             )
         )
 
     def test_a_cancelled_slot_frees_up(self) -> None:
         cancelled = self.make_reservation(
-            self.student, self.lab, date=self.tomorrow, status=3,
-            start_time=SLOT_IN_WINDOW[0], end_time=SLOT_IN_WINDOW[1],
+            self.student,
+            self.lab,
+            date=self.tomorrow,
+            status=3,
+            start_time=SLOT_IN_WINDOW[0],
+            end_time=SLOT_IN_WINDOW[1],
         )
         self.assert_success(
-            self.client.post(CREATE, json=self._payload(), headers=self.auth(self.student))
+            self.client.post(
+                CREATE, json=self._payload(), headers=self.auth(self.student)
+            )
         )
         self.reload(cancelled)
         self.assertEqual(cancelled.status, 3)
@@ -178,7 +202,9 @@ class CreateReservationCases(ApiTestCase):
         )
         # 同一时段还可以约整间实验室
         self.assert_success(
-            self.client.post(CREATE, json=self._payload(), headers=self.auth(self.student))
+            self.client.post(
+                CREATE, json=self._payload(), headers=self.auth(self.student)
+            )
         )
         types = [
             "设备" if row.equipment_id else "实验室"
@@ -188,14 +214,18 @@ class CreateReservationCases(ApiTestCase):
 
     def test_a_missing_device_is_reported(self) -> None:
         response = self.client.post(
-            CREATE, json=self._payload(equipment_id=99999), headers=self.auth(self.student)
+            CREATE,
+            json=self._payload(equipment_id=99999),
+            headers=self.auth(self.student),
         )
         self.assert_business_error(response, "实验室设备不存在")
 
     def test_a_device_under_repair_cannot_be_reserved(self) -> None:
         broken = self.make_equipment(self.lab, "坏掉的主机", status=0)
         response = self.client.post(
-            CREATE, json=self._payload(equipment_id=broken.id), headers=self.auth(self.student)
+            CREATE,
+            json=self._payload(equipment_id=broken.id),
+            headers=self.auth(self.student),
         )
         self.assert_business_error(response, "实验室设备正在维修")
 
@@ -211,9 +241,13 @@ class CreateReservationCases(ApiTestCase):
                 status=0,
             )
         response = self.client.post(
-            CREATE, json=self._payload(date=_day(10 + MAX_ACTIVE_RESERVATIONS)), headers=self.auth(self.student)
+            CREATE,
+            json=self._payload(date=_day(10 + MAX_ACTIVE_RESERVATIONS)),
+            headers=self.auth(self.student),
         )
-        self.assert_business_error(response, f"进行中的预约已达上限 {MAX_ACTIVE_RESERVATIONS} 条")
+        self.assert_business_error(
+            response, f"进行中的预约已达上限 {MAX_ACTIVE_RESERVATIONS} 条"
+        )
 
     def test_rejected_and_cancelled_rows_do_not_count_against_the_quota(self) -> None:
         for index in range(MAX_ACTIVE_RESERVATIONS):
@@ -221,7 +255,9 @@ class CreateReservationCases(ApiTestCase):
                 self.student, self.lab, date=_day(20 + index), status=3 if index else 2
             )
         self.assert_success(
-            self.client.post(CREATE, json=self._payload(), headers=self.auth(self.student))
+            self.client.post(
+                CREATE, json=self._payload(), headers=self.auth(self.student)
+            )
         )
 
     def test_creation_requires_authentication(self) -> None:
@@ -229,7 +265,9 @@ class CreateReservationCases(ApiTestCase):
 
     def test_lab_id_is_required(self) -> None:
         self.assert_validation_error(
-            self.client.post(CREATE, json=self._payload(lab_id=None), headers=self.auth(self.student))
+            self.client.post(
+                CREATE, json=self._payload(lab_id=None), headers=self.auth(self.student)
+            )
         )
 
 
@@ -243,26 +281,37 @@ class ListReservationCases(ApiTestCase):
         self.tomorrow = _day(1)
 
         self.mine = self.make_reservation(
-            self.student, self.lab, date=self.tomorrow, start_time="09:00", end_time="10:00"
+            self.student,
+            self.lab,
+            date=self.tomorrow,
+            start_time="09:00",
+            end_time="10:00",
         )
         self.theirs = self.make_reservation(
-            self.other, self.lab, date=self.tomorrow, start_time="11:00", end_time="12:00", status=1
+            self.other,
+            self.lab,
+            date=self.tomorrow,
+            start_time="11:00",
+            end_time="12:00",
+            status=1,
         )
 
     def test_a_student_only_sees_their_own_reservations(self) -> None:
-        data = self.assert_success(self.client.get(LIST, headers=self.auth(self.student)))
+        data = self.assert_success(
+            self.client.get(LIST, headers=self.auth(self.student))
+        )
         self.assertEqual(data["total"], 1)
         self.assertEqual(data["list"][0]["id"], self.mine.id)
 
     def test_an_admin_sees_every_reservation(self) -> None:
         data = self.assert_success(self.client.get(LIST, headers=self.auth(self.admin)))
         self.assertEqual(data["total"], 2)
-        self.assertEqual(
-            {item["user_name"] for item in data["list"]}, {"张三", "李四"}
-        )
+        self.assertEqual({item["user_name"] for item in data["list"]}, {"张三", "李四"})
 
     def test_relations_and_type_are_filled_in(self) -> None:
-        item = self.assert_success(self.client.get(LIST, headers=self.auth(self.student)))["list"][0]
+        item = self.assert_success(
+            self.client.get(LIST, headers=self.auth(self.student))
+        )["list"][0]
         self.assertEqual(item["user_name"], "张三")
         self.assertEqual(item["lab_name"], "计算机实验室")
         self.assertIsNone(item["equipment_name"])
@@ -281,9 +330,13 @@ class ListReservationCases(ApiTestCase):
             },
             headers=self.auth(self.student),
         )
-        data = self.assert_success(self.client.get(LIST, headers=self.auth(self.student)))
+        data = self.assert_success(
+            self.client.get(LIST, headers=self.auth(self.student))
+        )
         by_id = {item["id"]: item for item in data["list"]}
-        device_item = [item for item in data["list"] if item["equipment_name"] == "开发主机"][0]
+        device_item = [
+            item for item in data["list"] if item["equipment_name"] == "开发主机"
+        ][0]
         self.assertEqual(device_item["type"], "设备")
         self.assertEqual(len(by_id), 2)
 
@@ -301,7 +354,9 @@ class ListReservationCases(ApiTestCase):
         admin_approved = self.assert_success(
             self.client.get(LIST + "?status=1", headers=self.auth(self.admin))
         )
-        self.assertEqual([item["id"] for item in admin_approved["list"]], [self.theirs.id])
+        self.assertEqual(
+            [item["id"] for item in admin_approved["list"]], [self.theirs.id]
+        )
 
     def test_ordering_is_newest_first(self) -> None:
         data = self.assert_success(self.client.get(LIST, headers=self.auth(self.admin)))
@@ -336,7 +391,8 @@ class CancelReservationCases(ApiTestCase):
         reservation = self.make_reservation(self.student, self.lab, status=0)
         self.assert_success(
             self.client.put(
-                f"/api/reservation/{reservation.id}/cancel", headers=self.auth(self.student)
+                f"/api/reservation/{reservation.id}/cancel",
+                headers=self.auth(self.student),
             )
         )
         self.reload(reservation)
@@ -369,7 +425,9 @@ class CancelReservationCases(ApiTestCase):
         self.reload(reservation)
         self.assertEqual(reservation.status, 0)
 
-    def test_an_already_approved_reservation_cannot_be_cancelled_by_the_student(self) -> None:
+    def test_an_already_approved_reservation_cannot_be_cancelled_by_the_student(
+        self,
+    ) -> None:
         """⚠️ 当前设计（钉住行为）：只有 status==0 能被学生取消。
 
         已被管理员通过（status=1）的预约，学生自己撤不掉，只能请管理员处理。
@@ -393,14 +451,21 @@ class CancelReservationCases(ApiTestCase):
         self.reload(reservation)
         self.assertEqual(reservation.status, 3)
 
-    def test_admin_cannot_cancel_rejected_or_already_cancelled_reservations(self) -> None:
+    def test_admin_cannot_cancel_rejected_or_already_cancelled_reservations(
+        self,
+    ) -> None:
         for status in (2, 3):
             with self.subTest(status=status):
-                reservation = self.make_reservation(self.student, self.lab, status=status)
-                response = self.client.put(
-                    f"/api/reservation/{reservation.id}/cancel", headers=self.auth(self.admin)
+                reservation = self.make_reservation(
+                    self.student, self.lab, status=status
                 )
-                self.assert_business_error(response, "预约不存在、无权限或当前状态无法取消")
+                response = self.client.put(
+                    f"/api/reservation/{reservation.id}/cancel",
+                    headers=self.auth(self.admin),
+                )
+                self.assert_business_error(
+                    response, "预约不存在、无权限或当前状态无法取消"
+                )
                 self.reload(reservation)
                 self.assertEqual(reservation.status, status)
 
@@ -412,7 +477,9 @@ class CancelReservationCases(ApiTestCase):
 
     def test_cancelling_requires_authentication(self) -> None:
         reservation = self.make_reservation(self.student, self.lab, status=0)
-        self.assert_unauthorized(self.client.put(f"/api/reservation/{reservation.id}/cancel"))
+        self.assert_unauthorized(
+            self.client.put(f"/api/reservation/{reservation.id}/cancel")
+        )
 
 
 class AuditReservationCases(ApiTestCase):
@@ -443,7 +510,12 @@ class AuditReservationCases(ApiTestCase):
 
     def test_a_rejected_reservation_frees_the_slot(self) -> None:
         reservation = self.make_reservation(
-            self.student, self.lab, date=_day(1), start_time="09:00", end_time="10:00", status=0
+            self.student,
+            self.lab,
+            date=_day(1),
+            start_time="09:00",
+            end_time="10:00",
+            status=0,
         )
         self._audit(reservation.id, 2)
         self.assert_success(
@@ -463,7 +535,9 @@ class AuditReservationCases(ApiTestCase):
         reservation = self.make_reservation(self.student, self.lab, status=0)
         for status in (0, 3, 9):
             with self.subTest(status=status):
-                self.assert_business_error(self._audit(reservation.id, status), "审核状态错误")
+                self.assert_business_error(
+                    self._audit(reservation.id, status), "审核状态错误"
+                )
         self.reload(reservation)
         self.assertEqual(reservation.status, 0)
 
@@ -491,7 +565,9 @@ class AuditReservationCases(ApiTestCase):
     def test_auditing_requires_a_valid_status_field(self) -> None:
         reservation = self.make_reservation(self.student, self.lab, status=0)
         response = self.client.put(
-            f"/api/reservation/{reservation.id}/audit", json={}, headers=self.auth(self.admin)
+            f"/api/reservation/{reservation.id}/audit",
+            json={},
+            headers=self.auth(self.admin),
         )
         self.assert_validation_error(response)
 
