@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class AgentTraceItem(BaseModel):
@@ -75,6 +75,14 @@ class UserMemoryItem(BaseModel):
 class UserMemoryCreateRequest(BaseModel):
     memory_type: str = Field(default="preference", max_length=32)
     content: str = Field(min_length=1, max_length=500)
+
+    @field_validator("content")
+    @classmethod
+    def content_must_not_be_blank(cls, content: str) -> str:
+        content = content.strip()
+        if not content:
+            raise ValueError("记忆内容不能为空")
+        return content
 
 
 class ToolMeta(BaseModel):

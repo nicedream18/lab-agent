@@ -4,7 +4,7 @@
       <div>
         <div class="page-kicker">BOOKING REVIEW</div>
         <h2 class="page-title">预约审核</h2>
-        <p class="page-description">核对申请人、空间与时段，及时处理待审核预约。</p>
+        <p class="page-description">核对申请人、空间与时段，审核预约并按需取消已通过预约。</p>
       </div>
     </div>
 
@@ -50,12 +50,13 @@
             <el-tag :type="statusType(row.status)">{{ statusText(row.status) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="180">
+        <el-table-column label="操作" width="250">
           <template #default="{ row }">
             <template v-if="row.status === 0">
               <el-button type="success" text bg @click="handleAudit(row, 1)">通过</el-button>
               <el-button type="danger" text bg @click="handleAudit(row, 2)">拒绝</el-button>
             </template>
+            <el-button v-if="row.status === 1" type="danger" text bg @click="handleCancel(row)">取消</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -75,7 +76,7 @@
 </template>
 
 <script setup>
-import { auditReservationApi, getReservationPageList } from '@/api/reservation'
+import { auditReservationApi, cancelReservationApi, getReservationPageList } from '@/api/reservation'
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessageBox, ElMessage } from 'element-plus'
 const statusType = (status) => {
@@ -124,6 +125,24 @@ const handleAudit = (row, status) => {
     })
     .catch(() => {
       // 用户点了取消，不做处理
+    })
+}
+
+const handleCancel = (row) => {
+  ElMessageBox.confirm(`确认取消 [${row.user_name}] 已通过的预约？`, '取消预约', { type: 'warning' })
+    .then(async () => {
+      try {
+        const res = await cancelReservationApi(row.id)
+        if (res.code === 200) {
+          ElMessage.success('取消预约成功')
+          load()
+        }
+      } catch (e) {
+        // request.js 已统一提示
+      }
+    })
+    .catch(() => {
+      // 用户点了取消
     })
 }
 

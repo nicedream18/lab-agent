@@ -118,14 +118,15 @@ def get_reservation_page_list(
 
 
 def cancel_reservation(db: Session, current_user: User, reservation_id: int):
-    """学生取消预约"""
+    """学生可撤回自己的待审核预约；管理员可取消任意待审核或已通过预约。"""
+    conditions = [Reservation.id == reservation_id]
+    if current_user.role == "admin":
+        conditions.append(Reservation.status.in_([0, 1]))
+    else:
+        conditions.extend((Reservation.user_id == current_user.id, Reservation.status == 0))
     updated = db.execute(
         update(Reservation)
-        .where(
-            Reservation.id == reservation_id,
-            Reservation.user_id == current_user.id,
-            Reservation.status == 0,
-        )
+        .where(*conditions)
         .values(status=3)
     )
     if updated.rowcount != 1:

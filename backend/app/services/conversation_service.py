@@ -159,7 +159,7 @@ def load_conversation(
 
     messages = (
         db.query(AiMessage)
-        .filter(AiMessage.conversation_id == conversation_id)
+        .filter(AiMessage.conversation_id == conversation_id, AiMessage.user_id == user_id)
         .order_by(AiMessage.id.asc())
         .all()
     )
@@ -177,8 +177,9 @@ def delete_conversation(db: Session, user_id: int, conversation_id: str) -> bool
             )
             .delete(synchronize_session=False)
         )
-        # 消息表按 conversation_id 删，不带 user_id：会话已经验过归属了，
-        # 而且消息表没有唯一约束，多一个过滤条件只会让删除计划更难看懂。
+        if not removed:
+            db.rollback()
+            return False
         db.query(ReservationDraft).filter(
             ReservationDraft.conversation_id == conversation_id,
             ReservationDraft.user_id == user_id,
@@ -187,7 +188,10 @@ def delete_conversation(db: Session, user_id: int, conversation_id: str) -> bool
             CancellationDraft.conversation_id == conversation_id,
             CancellationDraft.user_id == user_id,
         ).delete(synchronize_session=False)
-        db.query(AiMessage).filter(AiMessage.conversation_id == conversation_id).delete(
+        db.query(AiMessage).filter(
+            AiMessage.conversation_id == conversation_id,
+            AiMessage.user_id == user_id,
+        ).delete(
             synchronize_session=False
         )
         db.commit()

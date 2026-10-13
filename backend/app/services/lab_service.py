@@ -18,7 +18,7 @@ def get_lab_page_list(
     query = db.query(Lab)
     if keywords:
         query = query.filter(Lab.name.ilike(f"%{keywords}%"))
-    if status:
+    if status is not None:
         query = query.filter(Lab.status == status)
     total = query.count()
     items = (

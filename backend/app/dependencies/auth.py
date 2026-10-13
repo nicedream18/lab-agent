@@ -2,7 +2,6 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
-from app.common.exceptions import BusinessException
 from app.database import get_db
 from app.models.user import User
 from app.utils.jwt import decode_access_token
@@ -22,7 +21,7 @@ def get_current_user(
         )
     # 获取到用户ID
     user_id = payload.get("user_id")
-    if not user_id:
+    if user_id is None or isinstance(user_id, bool) or not isinstance(user_id, int):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的登录凭证"
         )
@@ -44,5 +43,5 @@ def get_current_user(
 def get_current_admin(current_user: User = Depends(get_current_user)) -> User:
     """只有管理员才能访问"""
     if current_user.role != "admin":
-        raise BusinessException(message="无权限访问", code=403)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权限访问")
     return current_user

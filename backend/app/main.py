@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 Base.metadata.create_all(bind=engine)
 from fastapi import HTTPException
 from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
 
 from app.api import api
@@ -126,6 +127,7 @@ app.include_router(api)
 # 注册异常处理器
 app.add_exception_handler(BusinessException, bussiness_excpetion_hadler)
 app.add_exception_handler(HTTPException, http_excpetion_hadler)
+app.add_exception_handler(StarletteHTTPException, http_excpetion_hadler)
 app.add_exception_handler(RequestValidationError, validation_excpetion_hadler)
 # 全局的异常兜底，必须放在最后注册！！
 app.add_exception_handler(Exception, global_excpetion_hadler)

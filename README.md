@@ -71,7 +71,8 @@ flowchart LR
 
 ```bash
 cd backend
-.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/python -m pytest --cov=app --cov-report=term-missing --cov-fail-under=70
 .venv/bin/python -m evals.run
 ```
 

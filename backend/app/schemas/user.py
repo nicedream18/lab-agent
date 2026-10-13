@@ -1,5 +1,7 @@
 from pydantic import BaseModel, ConfigDict
 
+from app.schemas.password import Password
+
 
 class UserResponse(BaseModel):
     id: int
@@ -16,7 +18,7 @@ class UserResponse(BaseModel):
 
 class UserCreateRequest(BaseModel):
     username: str
-    password: str = "123"
+    password: Password = "123"
     name: str | None = None
     email: str | None = None
     phone: str | None = None

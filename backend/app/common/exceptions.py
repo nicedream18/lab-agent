@@ -1,7 +1,8 @@
 from typing import cast
 
-from fastapi import HTTPException, Request
+from fastapi import Request
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException
 
 from app.common.response import Response
 
@@ -36,6 +37,7 @@ async def http_excpetion_hadler(_: Request, exc: Exception):
         content=Response.error(
             code=http_exc.status_code, message=http_exc.detail
         ).model_dump(),
+        headers=http_exc.headers,
     )
 
 
