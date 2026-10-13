@@ -21,7 +21,8 @@ jobs:
             backend/requirements.txt
             backend/requirements-dev.txt
       - run: python -m pip install -r requirements-dev.txt
-      - run: python -m pytest --cov=app --cov-report=term-missing --cov-fail-under=70
+      - run: python -m pytest --cov=app --cov-report=term-missing --cov-report=json:coverage.json --cov-fail-under=80
+      - run: python scripts/check_coverage.py coverage.json
       - run: python -m evals.run
 
   frontend-build:
