@@ -1,0 +1,2 @@
+# Install in .venv-loadtest: Locust's gevent patching stays out of app/tests.
+locust==2.46.7

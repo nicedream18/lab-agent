@@ -1,10 +1,12 @@
 import asyncio
+import logging
 from datetime import datetime
 
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.common.exceptions import BusinessException
+from app.common.async_io import run_sync
 from app.common.response import PageResponse
 from app.database import SessionLocal
 from app.models.equipment import Equipment
@@ -14,6 +16,7 @@ from app.models.user import User
 from app.schemas.reservation import ReservationCreateRequest, ReservationResponse
 
 MAX_ACTIVE_RESERVATIONS = 5
+logger = logging.getLogger(__name__)
 
 
 def create_reservation(db: Session, current_user: User, data: ReservationCreateRequest):
@@ -168,7 +171,11 @@ def expire_pending_reservations():
 
 async def run_expire_scan():
     while True:
-        expire_pending_reservations()
+        try:
+            # The scan owns its Session from creation through commit/close.
+            await run_sync(expire_pending_reservations)
+        except Exception:
+            logger.exception("后台扫描过期预约失败")
         await asyncio.sleep(60)
 
 

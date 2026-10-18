@@ -221,6 +221,20 @@ def tool_label(name: str) -> str:
 
 
 def run_tool(ctx: AgentContext, name: str, args: dict[str, Any]) -> dict:
+    # StructuredTool.func bypasses LangChain's normal tool callback machinery.
+    # Trace only model-visible arguments; ctx contains ORM objects and identity.
+    from app.agent.observability import span
+
+    with span(name, run_type="tool", inputs={"args": args},
+              metadata={"tool_name": name}) as run:
+        result = _run_tool(ctx, name, args)
+        if run is not None:
+            run.end(outputs=result, error=None if result.get("ok") else "tool_returned_failure",
+                    metadata={"ok": bool(result.get("ok"))})
+        return result
+
+
+def _run_tool(ctx: AgentContext, name: str, args: dict[str, Any]) -> dict:
     """执行工具，把异常统一收敛成 {"ok": False, "error": ...}。
 
     这里**必须**吞掉异常而不是往外抛：工具失败对 Agent 来说是

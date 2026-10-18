@@ -2,6 +2,8 @@
 
 一个面向实验室与设备预约的 Agent 应用。用户可以用中文查实验室、设备、可预约时段和管理规定，也可以明确指示创建或取消自己的预约。前端展示流式回答、执行步骤和工具调用记录。
 
+基于 LangGraph、FastAPI、MySQL 和 Chroma 构建实验室预约 Agent，实现 RAG 检索、智能工具调用、多步任务规划与 SSE 流式交互；引入 Redis 缓存、异步 I/O 和模型推理合批，Embedding 吞吐提升 3.94 倍，核心 API 在 20 并发下达到 800+ QPS、P99 小于 50 ms。
+
 这个项目的重点是**让模型负责理解和选择工具，让代码负责写库边界与业务校验**。单步问题直接进入工具调用循环；需要多步查询时，模型可生成计划，按步骤调用工具，并在失败后调整尚未完成的步骤。
 
 ```mermaid
@@ -23,6 +25,8 @@ flowchart LR
 - **跨轮预约确认**：服务端按用户和会话保存 20 分钟的预约草稿。先提出预约再补充时间，或查到唯一可用时段后回复“确认预约”，都无需重复全部信息；提交参数必须与草稿一致，成功后重复确认不会再创建记录。改换实验室或日期会清掉旧时段。
 - **跨轮取消确认**：同一天有多条待审核预约时，服务端展示并保存当前用户的候选编号；回复“都取消”、预约号或唯一时段即可继续。批量取消在同一事务中完成，任一条状态变化则整组不取消。
 - **可观测性**：节点轨迹和工具调用结果分别落库；聊天记录留存 30 天，用户可查看和管理长期偏好。前端以 SSE 展示执行过程。
+- **调用链分析**：可选 LangSmith 追踪，关联 LangGraph 节点、模型、工具与 RAG 各阶段，记录缓存命中和重试次数，见 [LangSmith 接入指南](docs/langsmith.md)。
+- **LLM 响应缓存**：可选 Redis 精确缓存，按用户和完整模型输入隔离，支持 TTL 与故障回退。启用方式见 [Redis 缓存指南](docs/llm-cache.md)。
 - **知识库**：`backend/data/kb/*.md` 按章节切片、增量同步到本地 Chroma，使用中文 embedding 检索。新增文件需重启后端。
 
 技术栈：FastAPI、SQLAlchemy、MySQL、LangGraph、LangChain 工具调用、Chroma、sentence-transformers、Vue 3、Vite、Element Plus。
@@ -66,6 +70,12 @@ flowchart LR
 - “帮我取消这个预约”：存在多个候选时要求指定编号；“能帮我取消吗？”只询问，不执行取消。
 
 ## 回归与评测
+
+性能分析入口与 cProfile / py-spy 使用方法见 [性能分析指南](docs/performance.md)；并发、吞吐与尾延迟测量见 [Locust 压测指南](docs/load-testing.md)。
+
+Agent 的模型、Redis 异步调用和数据库线程池边界见 [异步 I/O 说明](docs/async-io.md)。
+
+Embedding 与 Reranker 支持批处理，参数及本机吞吐对比见 [推理批处理](docs/inference-batching.md)。
 
 无需数据库和模型服务即可运行离线检查：
 

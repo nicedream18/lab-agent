@@ -43,6 +43,7 @@ MANIFEST
 
 # 虚拟环境：各写法都覆盖一遍，因为不同工具建的目录名不一样
 .venv/
+.venv-loadtest/
 venv/
 ENV/
 env/
@@ -50,6 +51,9 @@ env/
 
 # 测试与覆盖率产物
 .pytest_cache/
+backend/profiles/
+backend/loadtests/accounts.local.json
+backend/coverage.json
 .coverage
 .coverage.*
 htmlcov/

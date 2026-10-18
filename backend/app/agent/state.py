@@ -19,7 +19,7 @@ v3 追加了「任务计划」这一层（Plan-and-Execute，条件触发）：�
 """
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated, Any, TypedDict
 
 from langchain_core.messages import AnyMessage
@@ -210,6 +210,15 @@ class AgentContext:
     # 上一轮被限流不该让下一轮也直接放弃模型。
     llm_failures: int = 0
     cancel_revision: int | None = None
+    cache_identity: dict = field(init=False)
+
+    def __post_init__(self) -> None:
+        # Snapshot in the runner's worker. Later commits may expire the ORM User;
+        # cache-key generation on the event loop must never trigger a lazy SELECT.
+        self.cache_identity = {
+            "id": getattr(self.user, "id", None),
+            "role": getattr(self.user, "role", ""),
+        }
 
     def emit(self, event: dict) -> None:
         """向前端推一条流式事件；非流式场景 writer 为 None，静默丢弃。

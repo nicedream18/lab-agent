@@ -1,0 +1,21 @@
+name: lab-agent-monitoring
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.13.4
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./rules.yml:/etc/prometheus/rules.yml:ro
+      - prometheus-data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+      - --storage.tsdb.retention.size=512MB
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:

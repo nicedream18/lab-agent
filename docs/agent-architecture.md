@@ -1916,8 +1916,9 @@ score_parts.sort(key=lambda x: x["score"], reverse=True)   # 排序
 而 chroma 返回的本就是距离升序（由近到远）——
 所以 `sort` 是纯空转；`score < 0.5` 等价于 `cos < 0`，实测一次都没触发过。
 **「多取几条再排序」在没有 reranker 的情况下不等于「排得更准」**，
-它只是「多给模型一段上下文」。真正的重排要靠 CrossEncoder，属于未做的待办
-（本地 cache 里已经有 `BAAI/bge-reranker-v2-m3`，但没接入）。
+它只是「多给模型一段上下文」。该轮分析时尚未接入精排；后续已增加
+`BAAI/bge-reranker-v2-m3` CrossEncoder 与跨请求批处理，当前配置和实测见
+[推理批处理](inference-batching.md)。关闭精排时仍按向量距离排序。
 
 `tools.py` 的 `MAX_RESULT_CHARS` 因此从 1500 提到 2400：
 `TOP_K_FINAL(3)` 个切片 × 约 400 字，经 `json.dumps`（换行要转义成 `\n`）

@@ -84,7 +84,7 @@ def trace_node(
 
     try:
         yield box
-    except Exception as exc:
+    except BaseException as exc:
         box["status"] = "failed"
         box["output"] = box["output"] or f"{type(exc).__name__}: {exc}"
         raise

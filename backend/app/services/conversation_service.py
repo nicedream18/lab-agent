@@ -25,6 +25,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
 
+from app.common.async_io import run_sync
 from app.database import SessionLocal
 from app.models.ai_conversation import AiConversation
 from app.models.ai_message import AiMessage
@@ -246,13 +247,13 @@ def _prune_in_new_session() -> int:
 async def run_cleanup_scan() -> None:
     """后台定时清理过期会话。
 
-    用 asyncio.to_thread 包住同步的 SQL 查询：直接调用会把事件循环钉住。
+    把同步 SQL 查询交给有并发上限的线程池，取消时等待会话关闭。
     （本项目用的是同步 SQLAlchemy，没有 async session，这是最省事的接法。）
     """
     while True:
         await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
         try:
-            removed = await asyncio.to_thread(_prune_in_new_session)
+            removed = await run_sync(_prune_in_new_session)
             if removed:
                 logger.info("已清理 %d 条超过 %d 天的历史会话", removed, RETENTION_DAYS)
         except asyncio.CancelledError:

@@ -1,0 +1,3 @@
+# Optional profiling tools; cProfile/pstats are part of Python itself.
+py-spy>=0.4.1,<0.5
+snakeviz>=2.2,<3

@@ -1,4 +1,5 @@
 fastapi==0.115.13
+anyio>=4.8,<5
 uvicorn==0.34.0
 # 文件上传接口（app/api/files.py 的 UploadFile/File）必需，缺失时 import app.main 直接抛
 # RuntimeError: Form data requires "python-multipart" to be installed
@@ -12,6 +13,10 @@ cryptography==50.0.1
 openai==3.14.1
 chromadb==1.5.9
 sentence-transformers==6.0.1
+numpy>=1.26,<3
 langgraph==1.2.11
 langchain-openai==1.6.2
 langchain-core==1.6.3
+langsmith==0.14.1
+redis==8.1.0
+prometheus-client==0.26.0

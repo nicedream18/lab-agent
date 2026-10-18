@@ -11,6 +11,9 @@ def configure_offline() -> None:
         "LLM_BASE_URL": "http://127.0.0.1:9/v1",
         "LLM_MODEL": "offline-tests-only",
         "LLM_FORCE_IPV4": "false",
+        "LLM_CACHE_ENABLED": "false",
+        "LANGSMITH_TRACING": "false",
+        "KB_RERANKER_ENABLED": "false",
     }
     for name, value in defaults.items():
         os.environ.setdefault(name, value)

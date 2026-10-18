@@ -4,6 +4,7 @@
 不连接数据库或 LLM。这个分数不代表自然语言答案质量。
 """
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,7 +17,7 @@ configure_offline()
 from app.agent import planner, tools
 
 
-def main() -> int:
+async def main() -> int:
     cases = json.loads(Path(__file__).with_name("write_authorization.json").read_text())
     failures = []
     true_positive = false_positive = false_negative = 0
@@ -32,7 +33,7 @@ def main() -> int:
         ctx = SimpleNamespace(llm_failures=0)
         state = {"user_query": case["query"], "today": "2026-10-11", "history": []}
         with patch.object(planner, "_ask", return_value=model_reply):
-            result = planner.analyze(ctx, state)
+            result = await planner.analyze(ctx, state)
         actual = set(result["allowed_write_tools"])
         expected = set(case["expected"])
         bound = set(tools.bindable_tool_names(actual)) & set(tools.WRITE_TOOLS)
@@ -67,4 +68,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(asyncio.run(main()))

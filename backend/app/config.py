@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent  # 后端项目的根路径
@@ -34,11 +35,41 @@ class Settings(BaseSettings):
     # ConnectError」。详见 app/utils/net.py。
     LLM_FORCE_IPV4: bool = True
 
+    LLM_CACHE_ENABLED: bool = False
+    REDIS_URL: SecretStr = SecretStr("redis://127.0.0.1:6379/0")
+    LLM_CACHE_TTL_SECONDS: int = Field(default=60, ge=1)
+    LLM_CACHE_TIMEOUT: float = Field(default=0.2, gt=0, le=5)
+    LLM_CACHE_NAMESPACE: str = Field(default="lab-agent:llm:v1", min_length=1)
+
+    LANGSMITH_TRACING: bool = False
+    LANGSMITH_API_KEY: SecretStr = SecretStr("")
+    LANGSMITH_PROJECT: str = Field(default="lab-agent", min_length=1)
+    LANGSMITH_ENDPOINT: str = "https://api.smith.langchain.com"
+    LANGSMITH_WORKSPACE_ID: str | None = None
+    LANGSMITH_HIDE_INPUTS: bool = True
+    LANGSMITH_HIDE_OUTPUTS: bool = True
+    LANGSMITH_SAMPLING_RATE: float = Field(default=1.0, ge=0, le=1)
+
     # 启动时是否在后台线程预热向量库（加载嵌入模型约 10s，常驻约 500MB）。
     # 本地开发开着体验最好（第一个提问不用等模型加载）；
     # 内存吃紧的服务器（比如 2C2G 的 ECS）应该设成 false，
     # 让模型在第一次 AI 请求时才加载，空闲内存能从 ~600MB 降到 ~120MB。
     KB_WARMUP_ON_STARTUP: bool = True
+
+    # Limits apply per process. CPU preserves the existing embedding device.
+    LAB_EMBEDDING_MODEL: str = "BAAI/bge-small-zh-v1.5"
+    KB_INFERENCE_DEVICE: str = "cpu"
+    KB_EMBEDDING_BATCH_SIZE: int = Field(default=32, ge=1, le=256)
+    KB_RERANKER_ENABLED: bool = True
+    KB_RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
+    KB_RERANKER_BATCH_SIZE: int = Field(default=8, ge=1, le=64)
+    KB_RERANKER_MAX_LENGTH: int = Field(default=512, ge=32, le=8192)
+    KB_BATCH_WAIT_MS: float = Field(default=3, ge=0, le=100)
+    KB_BATCH_MAX_PENDING: int = Field(default=512, ge=256, le=16384)
+    KB_INDEX_BATCH_SIZE: int = Field(default=64, ge=1, le=1024)
+
+    METRICS_ENABLED: bool = True
+    METRICS_TOKEN: SecretStr = SecretStr("")
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env", env_file_encoding="utf-8"

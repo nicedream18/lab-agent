@@ -1,6 +1,5 @@
 import hashlib
 import logging
-import os
 import re
 import threading
 import time
@@ -9,9 +8,10 @@ from typing import cast
 import chromadb
 from chromadb.api.models.Collection import Collection
 from chromadb.api.types import Embeddable, EmbeddingFunction
-from chromadb.utils import embedding_functions
 
-from app.config import BASE_DIR
+from app.agent.observability import span
+from app.config import BASE_DIR, settings
+from app.services import inference_service
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ KB_DIR = BASE_DIR / "data" / "kb"
 CHROMA_DIR = BASE_DIR / "data" / "chroma"
 
 # 离线服务器可以指向预先上传的 SentenceTransformer 模型目录。
-EMBEDDING_MODEL = os.getenv("LAB_EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
+EMBEDDING_MODEL = settings.LAB_EMBEDDING_MODEL
 COLLECTION_NAME = "lab_kb"
 
 # ---- 切片参数 ----
@@ -38,8 +38,7 @@ CHUNK_OVERLAP = 50
 CHUNKER_VERSION = 1
 
 # ---- 检索参数 ----
-# 向量召回候选数。⚠️ 没有 reranker 时拉大它并不提升准确率（最终排序仍是向量
-# 距离），留 8 是为了以后接精排时不用再改这里。
+# 向量召回候选数；启用 Reranker 后对这些候选批量打分，再选 TOP_K_FINAL。
 TOP_K_RECALL = 8
 # 最终交给模型的 chunk 数。原来是 2，但一条答案可能跨 3 个切片
 # （比如「管制化学品管理」和它前后文分属不同切片）。
@@ -60,30 +59,12 @@ _lock = threading.Lock()
 
 
 def get_embedding_fn():
-    """惰性创建嵌入模型：真正用到向量库时才导入 torch 并加载权重（约 10s）。
+    """Lazy shared embedding model with bounded cross-request micro-batching.
 
-    千万不要写成模块级语句。那会让 import app.main 也花掉这 10s：
-    每次 uvicorn --reload 都要重来一遍；更糟的是一旦 HuggingFace 连不上，
-    整个应用（连登录接口）都起不来。
-
-    这里不需要自己加缓存：chromadb 的 SentenceTransformerEmbeddingFunction
-    内部有一个「类级」字典 models（源码第 9 行 models: Dict[str, Any] = {}），
-    构造时先查 `if model_name not in self.models`（第 43 行）再真正加载。
-    换句话说，同一个进程里第二次构造是白送的——实测第一次 9.71s、第二次 0.00s，
-    而且拿到的是同一个 SentenceTransformer 对象。
-    唯一的调用点在 _build_collection() 里，而它被 _lock 保护，只跑一次，
-    所以这里直接构造即可。
-
-    normalize_embeddings=True 是刻意写死的，不是默认值（默认是 False）：
-    bge 系列本身是「余弦」模型，只有把向量归一化后，向量点积才等于余弦相似度，
-    检出的距离才落在一个可解释的区间里。开与不开不影响排序（hnswlib 在
-    space="cosine" 时自己也会归一化），但会影响「距离的数值」——
-    而下游 search() 是拿距离当分数用的，所以必须让入库与查询两侧口径一致。
-    ⚠️ 改这一行等于换了向量空间，旧集合里的向量是「未归一化」的，必须重建集合。
+    Preserve the existing model, CPU default, normalization and Chroma function
+    identity. Changing batch size does not require re-embedding stored documents.
     """
-    return embedding_functions.SentenceTransformerEmbeddingFunction(
-        model_name=EMBEDDING_MODEL, normalize_embeddings=True
-    )
+    return inference_service.get_embedding_fn(EMBEDDING_MODEL)
 
 
 def _file_hash(text: str) -> str:
@@ -227,12 +208,23 @@ def _sync_index(col: Collection) -> None:
         if text:
             on_disk[path.name] = (_file_hash(text), text)
 
-    indexed: dict[str, str] = {}
+    grouped: dict[str, list[dict]] = {}
     for meta in col.get(include=["metadatas"]).get("metadatas") or []:
         source = str((meta or {}).get("source") or "")
         if source:
-            # 同一个 source 的每行 file_hash 都一样，重复覆盖无所谓
-            indexed[source] = str((meta or {}).get("file_hash") or "")
+            grouped.setdefault(source, []).append(meta)
+    indexed: dict[str, str] = {}
+    for source, metas in grouped.items():
+        hashes = {str(meta.get("file_hash") or "") for meta in metas}
+        expected = metas[0].get("chunk_count")
+        complete = expected is None or (
+            isinstance(expected, int) and expected == len(metas)
+            and all(meta.get("chunk_count") == expected for meta in metas)
+            and {meta.get("chunk") for meta in metas} == set(range(expected))
+        )
+        # New batched writes record the expected count. A partial write must be
+        # retried next startup even when its first chunks have the new file hash.
+        indexed[source] = next(iter(hashes)) if len(hashes) == 1 and complete else ""
 
     removed = sorted(set(indexed) - set(on_disk))
     for source in removed:
@@ -263,7 +255,12 @@ def _sync_index(col: Collection) -> None:
         if not ids:
             logger.warning("知识库文件没切出任何内容，已跳过：%s", source)
             continue
-        col.add(ids=ids, documents=docs, metadatas=metas)  # pyright: ignore[reportArgumentType]
+        for meta in metas:
+            meta["chunk_count"] = len(ids)
+        for start in range(0, len(ids), settings.KB_INDEX_BATCH_SIZE):
+            end = start + settings.KB_INDEX_BATCH_SIZE
+            col.add(ids=ids[start:end], documents=docs[start:end],
+                    metadatas=metas[start:end])  # pyright: ignore[reportArgumentType]
         updated += 1
         logger.info("知识库入库 %s：%d 个切片", source, len(ids))
 
@@ -303,11 +300,11 @@ def _build_collection() -> Collection:
         configuration={"hnsw": {"space": "cosine"}},
     )
     # 索引同步失败不该让整个应用起不来：这个方法既被 warmup() 的后台线程调用，
-    # 也在第一个用户提问的同步路径上。如实记日志，本次沿用已有索引。
+    # 也在第一个用户提问的同步路径上。如实记日志，本次使用可用的切片。
     try:
         _sync_index(col)
     except Exception:
-        logger.exception("知识库索引同步失败，本次沿用已有索引")
+        logger.exception("知识库索引同步失败，本次使用可用切片，下次初始化重试")
     return col
 
 
@@ -323,13 +320,20 @@ def get_collection() -> Collection:
         return _collection
 
 
+def close() -> None:
+    """Drop collection handles before shutting down their shared model workers."""
+    global _collection
+    with _lock:
+        _collection = None
+        inference_service.close()
+
+
 def warmup() -> None:
     """在后台线程里预热向量库，由 main.py 的 lifespan 调用。
 
     干两件事：
     1. get_collection()：加载模型（约 10s）+ 打开/建集合；
-    2. 拿一句废话做一次真实检索：把 query 那条路径（文本向量化、
-       索引数据从磁盘载入、距离计算）也一并跑热。
+    2. 做一次真实检索：把查询向量化、索引载入和启用时的批量精排一并跑热。
        只做第 1 步的话，第一个用户提问仍然要额外等一次 encode()。
 
     预热失败绝不能拖垮整个应用：这里只记日志，
@@ -339,36 +343,68 @@ def warmup() -> None:
     try:
         col = get_collection()
         if col.count() > 0:
-            col.query(query_texts=["预热"], n_results=1)
+            search("实验室安全管理制度")
         logger.info("向量库预热完成，耗时 %.1fs", time.perf_counter() - started)
     except Exception:
         logger.exception("向量库预热失败，将在首次使用时重试")
 
 
-def search(query: str) -> str:
-    """用查询文本做向量检索，返回最相关的 TOP_K_FINAL 个知识库切片。
+def search_many(queries: list[str]) -> list[str]:
+    with span("kb.search", run_type="retriever", inputs={"queries": queries}) as run:
+        result = _search_many(queries)
+        if run is not None:
+            run.end(outputs={"contexts": result})
+        return result
 
-    每个切片自带「【文件名 > 章节路径】」前缀（由 _sync_index() 写入），
-    所以这里不再单独拼 [文件名]，模型也能看出这段出自哪一章哪一条。
-    """
+
+def _search_many(queries: list[str]) -> list[str]:
+    """Batch recall and reranking, preserving query order and empty positions."""
+    if not queries:
+        return []
+    if any(not isinstance(query, str) for query in queries):
+        raise TypeError("queries must be strings")
+    output = [""] * len(queries)
+    active = [(index, query) for index, query in enumerate(queries) if query.strip()]
+    if not active:
+        return output
     col = get_collection()
     total = col.count()
     if total == 0:
-        return ""
-    res = col.query(query_texts=[query], n_results=min(TOP_K_RECALL, total))
-    docs = (res.get("documents") or [[]])[0]
-    distances = (res.get("distances") or [[]])[0]
+        return output
+    for start in range(0, len(active), settings.KB_EMBEDDING_BATCH_SIZE):
+        batch = active[start:start + settings.KB_EMBEDDING_BATCH_SIZE]
+        with span("kb.recall", run_type="retriever",
+                  metadata={"query_count": len(batch), "top_k": min(TOP_K_RECALL, total)}):
+            res = col.query(query_texts=[query for _, query in batch],
+                            n_results=min(TOP_K_RECALL, total))
+        groups = res.get("documents")
+        if groups is None or len(groups) != len(batch):
+            raise ValueError("retrieval result count does not match query batch")
+        docs = [[doc for doc in group if isinstance(doc, str) and doc.strip()]
+                for group in groups]
+        if settings.KB_RERANKER_ENABLED:
+            pairs = [(query, doc) for (_, query), candidates in zip(batch, docs)
+                     for doc in candidates]
+            try:
+                scores = inference_service.rerank(pairs)
+            except Exception as exc:
+                # Retrieval remains usable if the optional model is unavailable
+                # or its bounded queue is full. Never mix scores between queries.
+                logger.warning("知识库精排不可用，本次保留向量召回顺序 (%s)",
+                               type(exc).__name__)
+            else:
+                offset = 0
+                for index, candidates in enumerate(docs):
+                    size = len(candidates)
+                    ranked = sorted(zip(candidates, scores[offset:offset + size]),
+                                    key=lambda item: item[1], reverse=True)
+                    docs[index] = [doc for doc, _ in ranked]
+                    offset += size
+        for (index, _), candidates in zip(batch, docs):
+            output[index] = "\n\n".join(candidates[:TOP_K_FINAL])
+    return output
 
-    # 度量已在 _build_collection() 里钉死为 cosine，dist = 1 - cos ∈ [0, 2]，
-    # 映射后 score ∈ [1/3, 1]，越接近 1 越相关。
-    # ⚠️ 这里**不排序也不过滤**：chroma 返回的就是距离升序（由近到远），
-    # 而 1/(1+dist) 严格单调递减，所以 sort 是空转；原来那个 `score < 0.5`
-    # 等价于 `cos < 0`，实测一次都没触发过。真正的重排要靠 CrossEncoder，
-    # 属于未做的待办（本地已缓存 BAAI/bge-reranker-v2-m3，暂未接入）。
-    logger.debug(
-        "知识库检索「%s」候选 %d 条：%s",
-        query,
-        len(docs),
-        [f"{1 / (1 + d):.3f}" for d in distances],
-    )
-    return "\n\n".join(docs[:TOP_K_FINAL])
+
+def search(query: str) -> str:
+    """Single-query compatibility entry; concurrent calls share inference batches."""
+    return search_many([query])[0]

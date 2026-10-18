@@ -1,10 +1,11 @@
 import json
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.common.response import Response
+from app.common.metrics import mark_failure
 from app.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.user import User
@@ -40,13 +41,26 @@ def _sse_line(payload: dict) -> str:
 @router.post("/chat/stream")
 def chat_stream(
     data: ChatRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     async def event_gen():
         # 内层生成器：取出业务事件，包装成 SSE 文本再往外 yield
+        done = False
         async for event in agent_service.stream_agent(db, current_user, data):
+            kind = event.get("type")
+            if (kind == "error"
+                    or kind == "node" and event.get("status") == "end" and event.get("state") == "failed"
+                    or kind == "step" and event.get("status") == "failed"):
+                mark_failure(request.scope, "agent_error")
+            if kind == "done":
+                done = isinstance(event.get("answer"), str) and bool(event["answer"].strip())
+                if not done:
+                    mark_failure(request.scope, "agent_error")
             yield _sse_line(event)
+        if not done:
+            mark_failure(request.scope, "agent_error")
 
     return StreamingResponse(
         event_gen(),

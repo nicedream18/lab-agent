@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.agent import graph as workflow
 from app.agent.state import MAX_HISTORY_MESSAGES
+from app.common.async_io import run_sync
 from app.common.exceptions import BusinessException
 from app.models.user import User
 from app.schemas.ai import ChatRequest
@@ -131,8 +132,8 @@ async def stream_agent(
     yield {"type": "status", "message": "正在理解您的需求…"}
 
     history = _history_from_request(data, query)
-    runner = workflow.WorkflowRunner(
-        db, current_user, conversation_id, query, history=history
+    runner = await run_sync(
+        workflow.WorkflowRunner, db, current_user, conversation_id, query, history=history
     )
     # 把最终回答从事件流里捞出来，等整轮跑完再落库。
     # 为什么不用 token 事件拼接：那一串只是「已吐给前端的碎片」，
@@ -151,7 +152,7 @@ async def stream_agent(
     else:
         # 只有整轮正常跑完且拿到回答才落库（上面的 except 分支会让 else 不执行）。
         # 写失败只记日志，不影响用户已经看到的回答 —— 见 conversation_service。
-        _record_turn(db, current_user, conversation_id, query, answer)
+        await run_sync(_record_turn, db, current_user, conversation_id, query, answer)
 
 
 async def run_agent(db: Session, current_user: User, data: ChatRequest) -> str:
@@ -160,8 +161,8 @@ async def run_agent(db: Session, current_user: User, data: ChatRequest) -> str:
     conversation_id = ensure_conversation_id(data)
 
     history = _history_from_request(data, query)
-    runner = workflow.WorkflowRunner(
-        db, current_user, conversation_id, query, history=history
+    runner = await run_sync(
+        workflow.WorkflowRunner, db, current_user, conversation_id, query, history=history
     )
     try:
         answer = await runner.ainvoke()
@@ -173,5 +174,5 @@ async def run_agent(db: Session, current_user: User, data: ChatRequest) -> str:
 
     if not (answer or "").strip():
         raise BusinessException(message="Agent 没有返回任何内容，请换一种说法再试")
-    _record_turn(db, current_user, conversation_id, query, answer)
+    await run_sync(_record_turn, db, current_user, conversation_id, query, answer)
     return answer.strip()

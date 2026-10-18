@@ -1,0 +1,39 @@
+groups:
+  - name: lab-agent-api
+    rules:
+      - record: lab_agent:api_qps:rate5m
+        expr: sum by (job, instance, method, route) (rate(lab_agent_http_requests_total{route=~"/api/.*|__unmatched_api__"}[5m]))
+      - record: lab_agent:api_failure_ratio:rate5m
+        expr: >-
+          (sum by (job, instance, method, route) (rate(lab_agent_http_requests_total{route=~"/api/.*|__unmatched_api__",outcome!="success"}[5m]))
+          or on (job, instance, method, route) (0 * lab_agent:api_qps:rate5m))
+          / clamp_min(lab_agent:api_qps:rate5m, 1e-9)
+      - record: lab_agent:api_p99_seconds:rate5m
+        expr: histogram_quantile(0.99, sum by (job, instance, method, route, le) (rate(lab_agent_http_request_duration_seconds_bucket{route=~"/api/.*|__unmatched_api__"}[5m])))
+      - alert: LabAgentDown
+        expr: up{job="lab-agent"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Lab Agent metrics target is unavailable"
+      - alert: LabAgentHighHTTP5xx
+        expr: >-
+          (sum(rate(lab_agent_http_requests_total{status=~"5..",route=~"/api/.*|__unmatched_api__"}[5m]))
+          / clamp_min(sum(lab_agent:api_qps:rate5m), 1e-9) > 0.05)
+          and sum(increase(lab_agent_http_requests_total{route=~"/api/.*|__unmatched_api__"}[5m])) >= 100
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API HTTP 5xx ratio exceeds 5%"
+      - alert: LabAgentSlowAPI
+        expr: >-
+          (lab_agent:api_p99_seconds:rate5m{route!~"/api/ai/.*"} > 1)
+          and on (job, instance, method, route)
+          sum by (job, instance, method, route) (increase(lab_agent_http_requests_total[5m])) >= 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Non-Agent API P99 exceeds 1 second"

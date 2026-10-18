@@ -51,16 +51,19 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, cast
 
 from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy.orm import Session
 
 from app.agent import memory, planner, tools
+from app.agent.observability import request_tracing
 from app.agent.state import (
     MAX_REPLAN_ROUNDS,
     MAX_TOOL_ROUNDS,
@@ -70,6 +73,7 @@ from app.agent.state import (
     AgentState,
 )
 from app.agent.tracer import trace_node, write_tool_execution
+from app.common.async_io import run_sync
 from app.models.reservation import Reservation
 from app.models.user import User
 from app.services import cancellation_draft_service as cancellations
@@ -432,16 +436,34 @@ def _save_available_draft(ctx: AgentContext, state: AgentState) -> None:
 # ---------------------------------------------------------------------------
 
 
+@asynccontextmanager
+async def _async_trace(ctx: AgentContext, name: str, input_text: str = ""):
+    # trace_node enters with only a timer/event; its exit writes to the DB.
+    manager = trace_node(ctx, name, input_text=input_text)
+    box = manager.__enter__()
+    try:
+        yield box
+    except BaseException as exc:
+        if not await run_sync(manager.__exit__, type(exc), exc, exc.__traceback__):
+            raise
+    else:
+        await run_sync(manager.__exit__, None, None, None)
+
+
+def _prepare_drafts(ctx: AgentContext, state: AgentState, result: dict) -> dict:
+    result = _prepare_reservation_draft(ctx, state, result)
+    return _prepare_cancel_draft(ctx, state, result)
+
+
 def node_analyze(ctx: AgentContext):
-    def run(state: AgentState) -> dict:
+    async def run(state: AgentState) -> dict:
         _bind_writer(ctx)
-        with trace_node(
+        async with _async_trace(
             ctx, "analyze", input_text=state.get("user_query") or ""
         ) as box:
-            result = planner.analyze(ctx, state)
+            result = await planner.analyze(ctx, state)
             if not result.get("error") and isinstance(ctx.db, Session):
-                result = _prepare_reservation_draft(ctx, state, result)
-                result = _prepare_cancel_draft(ctx, state, result)
+                result = await run_sync(_prepare_drafts, ctx, state, result)
             # 轨迹是给人看的，同样不能出现裸字段名
             box["output"] = (
                 f"槽位={result['slots']}；"
@@ -474,10 +496,10 @@ def node_plan(ctx: AgentContext):
     所以对那类请求来说，v3 的拓扑与 v2 完全一致。
     """
 
-    def run(state: AgentState) -> dict:
+    async def run(state: AgentState) -> dict:
         _bind_writer(ctx)
-        with trace_node(ctx, "plan", input_text=state.get("user_query") or "") as box:
-            result = planner.make_plan(ctx, state)
+        async with _async_trace(ctx, "plan", input_text=state.get("user_query") or "") as box:
+            result = await planner.make_plan(ctx, state)
             plan = result.get("plan") or []
             box["output"] = (
                 planner.plan_steps_text(plan) or "未能生成计划，退回单步执行"
@@ -506,10 +528,10 @@ def node_replan(ctx: AgentContext):
     调用前提是 _replan_needed() 已经确认「有一步没做成、且有可行的替代工具」。
     """
 
-    def run(state: AgentState) -> dict:
+    async def run(state: AgentState) -> dict:
         _bind_writer(ctx)
-        with trace_node(ctx, "replan", input_text=state.get("user_query") or "") as box:
-            result = planner.revise_plan(ctx, state)
+        async with _async_trace(ctx, "replan", input_text=state.get("user_query") or "") as box:
+            result = await planner.revise_plan(ctx, state)
             revision = result.get("plan_revision") or 0
             plan = result.get("plan") or []
             if plan:
@@ -615,7 +637,7 @@ def node_agent(ctx: AgentContext):
             set(state.get("allowed_write_tools") or []), only=hint_tools
         )
 
-        with trace_node(ctx, "agent", input_text=state.get("user_query") or "") as box:
+        async with _async_trace(ctx, "agent", input_text=state.get("user_query") or "") as box:
             try:
                 message = await planner.agent_step(
                     ctx,
@@ -1082,16 +1104,23 @@ def _after_agent(state: AgentState) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _worker_node(handler):
+    async def run(state: AgentState) -> dict:
+        return await run_sync(handler, state)
+
+    return run
+
+
 def build_graph(ctx: AgentContext):
     graph = StateGraph(AgentState)
 
     graph.add_node("analyze", node_analyze(ctx))
     graph.add_node("plan", node_plan(ctx))
     graph.add_node("agent", node_agent(ctx))
-    graph.add_node("execute", node_execute(ctx))
+    graph.add_node("execute", _worker_node(node_execute(ctx)))
     graph.add_node("advance", node_advance(ctx))
     graph.add_node("replan", node_replan(ctx))
-    graph.add_node("respond", node_respond(ctx))
+    graph.add_node("respond", _worker_node(node_respond(ctx)))
 
     graph.add_edge(START, "analyze")
     # analyze 之后三选一：模型不可用 → respond；需要规划 → plan；否则快路径 → agent。
@@ -1195,6 +1224,15 @@ class WorkflowRunner:
 
     # -- 流式 ------------------------------------------------------------
     async def astream(self) -> AsyncIterator[dict]:
+        with request_tracing(self.ctx.conversation_id, "stream", RECURSION_LIMIT) as config:
+            stream = self._astream(config)
+            try:
+                async for event in stream:
+                    yield event
+            finally:
+                await stream.aclose()
+
+    async def _astream(self, config: RunnableConfig) -> AsyncGenerator[dict, None]:
         """跑工作流并把每个节点产生的事件实时吐出去。
 
         用 stream_mode="custom"：节点内部通过 get_stream_writer() 主动推送事件，
@@ -1205,11 +1243,11 @@ class WorkflowRunner:
         # stream_mode=["custom", "values"] 的返回标成了 AsyncIterator[dict]，
         # 解包出来的 payload 因此不再是 dict。按真实形态断言回来。
         stream = cast(
-            "AsyncIterator[tuple[str, Any]]",
+            "AsyncGenerator[tuple[str, Any], None]",
             self.graph.astream(
                 self.state,
                 stream_mode=["custom", "values"],
-                config={"recursion_limit": RECURSION_LIMIT},
+                config=config,
             ),
         )
         try:
@@ -1223,6 +1261,8 @@ class WorkflowRunner:
             logger.exception("Agent 工作流执行失败")
             yield {"type": "error", "message": "Agent 执行失败，请稍后重试"}
             return
+        finally:
+            await stream.aclose()
 
         answer = (final_state or {}).get("final_response") or ""
         memory.append_turn(self.ctx.conversation_id, self.query, answer)
@@ -1231,9 +1271,8 @@ class WorkflowRunner:
     # -- 非流式 ----------------------------------------------------------
     async def ainvoke(self) -> str:
         try:
-            result = await self.graph.ainvoke(
-                self.state, config={"recursion_limit": RECURSION_LIMIT}
-            )
+            with request_tracing(self.ctx.conversation_id, "invoke", RECURSION_LIMIT) as config:
+                result = await self.graph.ainvoke(self.state, config=config)
         except Exception:
             logger.exception("Agent 工作流执行失败")
             raise

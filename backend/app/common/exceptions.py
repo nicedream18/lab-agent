@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
 from app.common.response import Response
+from app.common.metrics import mark_failure
 
 
 class BusinessException(Exception):
@@ -16,12 +17,13 @@ class BusinessException(Exception):
         super().__init__(message)
 
 
-async def bussiness_excpetion_hadler(_: Request, exc: Exception):
+async def bussiness_excpetion_hadler(request: Request, exc: Exception):
     """自定义业务异常处理器"""
     # starlette 的 ExceptionHandler 把第二个参数声明为 Exception，而函数参数是
     # 逆变的：声明成 BusinessException 会被判为不兼容。FastAPI 是按注册的异常
     # 类型分派的，走到这里的一定是 BusinessException，这里如实断言。
     biz = cast(BusinessException, exc)
+    mark_failure(request.scope, "business_error")
     return JSONResponse(
         status_code=200,
         content=Response.error(code=biz.code, message=biz.message).model_dump(),

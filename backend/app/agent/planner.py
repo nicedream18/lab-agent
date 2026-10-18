@@ -38,10 +38,12 @@ from typing import Any
 from urllib.parse import urlparse
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
-from app.agent import prompts, tools
+from app.agent import observability, prompts, tools
+from app.agent.llm_cache import response_cache
 from app.agent.state import (
     MAX_PLAN_STEPS,
     WRITE_TOOLS,
@@ -120,20 +122,24 @@ def missing_labels(missing: list | None) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def get_llm(streaming: bool = False) -> ChatOpenAI:
+def _generation_options() -> dict:
     # DeepSeek 默认开启 thinking；多轮工具调用需要原样回传 reasoning_content。
     # 当前 LangChain 消息链没有这个保证，先固定为非 thinking 模式，避免第二轮 400。
     deepseek = urlparse(settings.LLM_BASE_URL).hostname == "api.deepseek.com"
+    return {"temperature": 0,
+            "extra_body": {"thinking": {"type": "disabled"}} if deepseek else None}
+
+
+def get_llm(streaming: bool = False) -> ChatOpenAI:
     return ChatOpenAI(
         # 存根要求 SecretStr（运行时 str 其实也能被强转）。
         # 显式包一层既消掉类型报错，也避免密钥在 repr / 日志里裸奔。
         api_key=SecretStr(settings.LLM_API_KEY),
         base_url=settings.LLM_BASE_URL,
         model=settings.LLM_MODEL,
-        extra_body={"thinking": {"type": "disabled"}} if deepseek else None,
         # 结构化任务 temperature 必须为 0：同样的输入要拿到同样的 JSON，
         # 否则规划结果会飘，轨迹也没法复现。
-        temperature=0,
+        **_generation_options(),
         streaming=streaming,
         # 必须显式设超时。SDK 默认 600 秒，供应商卡住时「不报错」比「报错」更糟 ——
         # 用户会以为前端挂了。15 秒等不来的回答，如实说明比继续等更有价值。
@@ -191,9 +197,9 @@ def load_json(text: str) -> dict:
         return json.loads(fixed)
 
 
-def _invoke(messages: list) -> str:
+async def _invoke(messages: list) -> str:
     try:
-        response = get_llm().invoke(messages)
+        response = await get_llm().ainvoke(messages)
     except Exception as exc:
         logger.exception("调用大模型失败")
         raise BusinessException(message=f"大模型调用失败：{exc}") from exc
@@ -291,19 +297,36 @@ def is_transient(exc: BaseException) -> bool:
     )
 
 
-def _ask(ctx: AgentContext, prompt: str) -> str:
+@observability.observe_llm("llm.structured")
+async def _ask(ctx: AgentContext, prompt: str) -> str:
     """所有结构化环节都走这一个入口，便于统一加缓存 / 重试 / 埋点。
 
     熔断计数只在这里记：内部重试属于「这一问还没问完」，
     不该对外表现出连续失败。
     """
+    observability.annotate(cache_hit=False, attempts=0)
+    key = response_cache.make_key(ctx, [HumanMessage(content=prompt)],
+                                  {"stage": "structured", **_generation_options()})
+    cached = await response_cache.aget_text(key)
+    if cached is not None:
+        try:
+            if not isinstance(load_json(cached), dict):
+                raise ValueError("not a JSON object")
+        except (ValueError, TypeError):
+            pass
+        else:
+            _record(ctx, ok=True)
+            logger.info("LLM cache hit: structured")
+            observability.annotate(cache_hit=True)
+            return cached
     last: Exception | None = None
     for attempt, delay in enumerate(RETRY_DELAYS, start=1):
         if delay:
-            time.sleep(delay)
+            await asyncio.sleep(delay)
+        observability.annotate(attempts=attempt, retry_delay_seconds=delay)
         started = time.monotonic()
         try:
-            text = _invoke([HumanMessage(content=prompt)])
+            text = await _invoke([HumanMessage(content=prompt)])
         except BusinessException as exc:
             cause = exc.__cause__ or exc
             if not is_transient(cause) or too_slow_to_retry(started):
@@ -316,6 +339,14 @@ def _ask(ctx: AgentContext, prompt: str) -> str:
             logger.warning("模型调用第 %s 次失败，稍后重试：%s", attempt, cause)
         else:
             _record(ctx, ok=True)
+            # Invalid structured output must not become a repeated cache hit.
+            if key is not None:
+                try:
+                    valid = isinstance(load_json(text), dict)
+                except (ValueError, TypeError):
+                    valid = False
+                if valid:
+                    await response_cache.aput_text(key, text)
             return text
     _record(ctx, ok=False)
     raise last  # type: ignore[misc]
@@ -633,7 +664,7 @@ def explicit_write_request(text: str) -> str | None:
     return None
 
 
-def analyze(ctx: AgentContext, state: AgentState) -> dict:
+async def analyze(ctx: AgentContext, state: AgentState) -> dict:
     """把自然语言解析成 slots + missing_slots + authorized。
 
     这里刻意**不产出意图**。意图分类是模型能力最不稳的一环，而它对下游也没有
@@ -658,7 +689,7 @@ def analyze(ctx: AgentContext, state: AgentState) -> dict:
     )
 
     try:
-        data = load_json(_ask(ctx, prompt))
+        data = load_json(await _ask(ctx, prompt))
     except Exception as exc:  # noqa: BLE001
         # 改造前这里会退回 _fallback_analyze。现在不再兜底：一个拿不到模型
         # 结论的需求理解，产出的槽位和授权结论都不可靠，硬着头皮往下走
@@ -1075,14 +1106,8 @@ def _plan_unavailable() -> dict:
     return {"plan": [], "plan_revision": 0, "step_results": []}
 
 
-def make_plan(ctx: AgentContext, state: AgentState) -> dict:
-    """拆解任务计划。同步调用（复用 _ask，继承重试 / 429 / 熔断语义）。
-
-    为什么规划是同步的而 agent_step 是异步的：规划只需要一段 JSON 文本，
-    _ask 已经把这套同步重试逻辑写好了；而 agent_step 要拿回带 tool_calls 的
-    完整 AIMessage，必须用异步的 _ainvoke。复用现成的 _ask 比再造一个异步
-    同胞更省事，也不会让两套重试策略漂移。
-    """
+async def make_plan(ctx: AgentContext, state: AgentState) -> dict:
+    """异步拆解任务计划，复用 _ask 的缓存、重试和熔断策略。"""
     if breaker_open(ctx):
         logger.info("模型熔断已开启，本轮不做规划，退回单步路径")
         return _plan_unavailable()
@@ -1102,7 +1127,7 @@ def make_plan(ctx: AgentContext, state: AgentState) -> dict:
     )
 
     try:
-        data = load_json(_ask(ctx, prompt))
+        data = load_json(await _ask(ctx, prompt))
     except Exception as exc:  # noqa: BLE001
         logger.warning("任务规划失败，退回单步路径：%s", exc)
         return _plan_unavailable()
@@ -1121,7 +1146,7 @@ def make_plan(ctx: AgentContext, state: AgentState) -> dict:
     }
 
 
-def revise_plan(ctx: AgentContext, state: AgentState) -> dict:
+async def revise_plan(ctx: AgentContext, state: AgentState) -> dict:
     """按已拿到的观察结果重排剩余步骤。
 
     调用它的前提是 graph._replan_needed() 已经确认「有失败步骤、且有可行的
@@ -1166,7 +1191,7 @@ def revise_plan(ctx: AgentContext, state: AgentState) -> dict:
     )
 
     try:
-        data = load_json(_ask(ctx, prompt))
+        data = load_json(await _ask(ctx, prompt))
     except Exception as exc:  # noqa: BLE001
         logger.warning("重规划失败，保持原计划继续：%s", exc)
         return {"plan_revision": revision + 1}
@@ -1201,10 +1226,13 @@ def revise_plan(ctx: AgentContext, state: AgentState) -> dict:
 # ---------------------------------------------------------------------------
 
 
-async def _ainvoke(ctx: AgentContext, llm: Any, messages: list) -> Any:
-    """_ask 的异步同胞：同一套重试 / 熔断 / 限流策略，但返回完整的消息。
+@observability.observe_llm("llm.agent")
+async def _ainvoke(
+    ctx: AgentContext, llm: Any, messages: list, *, cache_key: str | None = None
+) -> Any:
+    """完整消息调用入口：沿用 _ask 的重试 / 熔断 / 限流策略。
 
-    为什么不复用 _ask：结构化的那两个环节只想要 content 里的 JSON，
+    为什么不复用 _ask：结构化环节只想要 content 里的 JSON，
     而自主决策要的是 tool_calls —— 它是 AIMessage 上另一个平级字段，
     把消息压成字符串就再也拼不回来了。
 
@@ -1212,10 +1240,18 @@ async def _ainvoke(ctx: AgentContext, llm: Any, messages: list) -> Any:
     彻底放弃」才 _record，单次尝试的失败不记账（否则一次瞬时抖动就能把
     熔断打开）。429 照样不重试 —— 重试只会更快烧掉配额。
     """
+    observability.annotate(cache_hit=False, attempts=0)
+    cached = await response_cache.aget_message(cache_key)
+    if cached is not None and not any(call.get("name") in WRITE_TOOLS for call in cached.tool_calls):
+        _record(ctx, ok=True)
+        logger.info("LLM cache hit: agent")
+        observability.annotate(cache_hit=True)
+        return cached
     last: Exception | None = None
     for attempt, delay in enumerate(RETRY_DELAYS, start=1):
         if delay:
             await asyncio.sleep(delay)
+        observability.annotate(attempts=attempt, retry_delay_seconds=delay)
         started = time.monotonic()
         try:
             message = await llm.ainvoke(messages)
@@ -1230,6 +1266,10 @@ async def _ainvoke(ctx: AgentContext, llm: Any, messages: list) -> Any:
             logger.warning("模型调用第 %s 次失败，稍后重试：%s", attempt, cause)
         else:
             _record(ctx, ok=True)
+            if isinstance(message, AIMessage) and not any(
+                call.get("name") in WRITE_TOOLS for call in message.tool_calls
+            ):
+                await response_cache.aput_message(cache_key, message)
             return message
     _record(ctx, ok=False)
     raise last  # type: ignore[misc]
@@ -1319,15 +1359,30 @@ async def agent_step(
 
     tool_choice 只在轮次用尽时被置为 "none"，逼模型基于已有观察给结论。
     """
+    bound_tools = tools.bindable_tools(
+        set(state.get("allowed_write_tools") or []), only=hint_tools
+    )
+    messages = build_agent_messages(state)
+    cache_key = None
+    has_write_history = any(
+        isinstance(message, AIMessage)
+        and any(call.get("name") in WRITE_TOOLS for call in message.tool_calls)
+        for message in state.get("messages") or []
+    )
+    if settings.LLM_CACHE_ENABLED and not state.get("allowed_write_tools") and not has_write_history:
+        cache_key = response_cache.make_key(
+            ctx, messages,
+            {"stage": "agent", **_generation_options(),
+             "tools": [convert_to_openai_tool(tool) for tool in bound_tools],
+             "tool_choice": tool_choice},
+        )
     llm = get_llm()
     llm = llm.bind_tools(
-        tools.bindable_tools(
-            set(state.get("allowed_write_tools") or []), only=hint_tools
-        ),
+        bound_tools,
         tool_choice=tool_choice,
     )
 
-    message = await _ainvoke(ctx, llm, build_agent_messages(state))
+    message = await _ainvoke(ctx, llm, messages, cache_key=cache_key)
     if not isinstance(message, AIMessage):
         # 理论上不会发生（ainvoke 返回的就是 AIMessage），
         # 但让更上层拿到一个「不是消息的东西」排查成本太高，不如在这里断掉。

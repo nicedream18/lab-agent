@@ -292,7 +292,8 @@ def test_agent_booking_and_cancel_selection_rules(db_session, entities):
     assert unknown_lab["ok"] is False
 
 
-def test_planner_json_helpers_plan_normalization_and_failure_fallback():
+@pytest.mark.anyio
+async def test_planner_json_helpers_plan_normalization_and_failure_fallback():
     assert planner.load_json("```json\n{\"a\":1,}\n```") == {"a": 1}
     with pytest.raises(ValueError):
         planner.load_json("no json")
@@ -303,17 +304,18 @@ def test_planner_json_helpers_plan_normalization_and_failure_fallback():
     assert plan == [{"step": 1, "goal": "lookup", "hint_tools": ["list_open_labs"], "depends_on": []}]
     ctx = SimpleNamespace(llm_failures=0)
     with patch.object(planner, "_ask", side_effect=RuntimeError("offline")):
-        assert planner.make_plan(ctx, {"user_query": "q"})["plan"] == []
+        assert (await planner.make_plan(ctx, {"user_query": "q"}))["plan"] == []
     ctx.llm_failures = planner.BREAKER_THRESHOLD
-    assert planner.make_plan(ctx, {})["plan"] == []
+    assert (await planner.make_plan(ctx, {}))["plan"] == []
 
 
-def test_planner_analyze_authorization_uses_user_words_and_handles_bad_output():
+@pytest.mark.anyio
+async def test_planner_analyze_authorization_uses_user_words_and_handles_bad_output():
     ctx = SimpleNamespace(llm_failures=0)
     payload = '{"slots":{"date":"2099-01-01","lab_name":"null"},"missing_slots":"bad","authorized":false,"write_followup":"booking_confirm"}'
     state = {"user_query": "帮我预约计算机实验室明天14:00到17:00", "today": "2026-10-12", "history": []}
     with patch.object(planner, "_ask", return_value=payload):
-        result = planner.analyze(ctx, state)
+        result = await planner.analyze(ctx, state)
     assert result["authorized"] is True
     assert result["allowed_write_tools"] == ["create_reservation"]
     assert result["slots"]["date"] == "2026-10-13"
@@ -322,10 +324,10 @@ def test_planner_analyze_authorization_uses_user_words_and_handles_bad_output():
     assert result["write_followup"] == "booking_confirm"
 
     with patch.object(planner, "_ask", return_value='{"slots":{},"authorized":true}'):
-        question = planner.analyze(ctx, {"user_query": "能帮我取消吗", "today": "2026-10-12"})
+        question = await planner.analyze(ctx, {"user_query": "能帮我取消吗", "today": "2026-10-12"})
     assert question["authorized"] is False and question["allowed_write_tools"] == []
     with patch.object(planner, "_ask", return_value="not json"):
-        assert planner.analyze(ctx, {"user_query": "hi", "today": "2026-10-12"})["error"]
+        assert (await planner.analyze(ctx, {"user_query": "hi", "today": "2026-10-12"}))["error"]
 
 
 def test_agent_service_persists_only_successful_answers(db_session, entities):

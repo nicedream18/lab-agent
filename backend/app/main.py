@@ -6,7 +6,11 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 import app.models  # 注册全部表，create_all 才能创建预约草稿表
+from app.agent.llm_cache import response_cache
+from app.agent import observability
 from app.config import UPLOAD_DIR, settings
+from app.common.async_io import run_sync
+from app.common.metrics import install_metrics
 from app.database import Base, engine
 from app.services import conversation_service, kb_service, reservation_service
 
@@ -90,7 +94,7 @@ async def lifespan(_: FastAPI):
 
     # 向量库预热：模型加载 + 首次检索约 10s，交给后台线程，别落在第一个用户请求上。
     #
-    # 为什么是 asyncio.to_thread？kb_service.warmup 是同步阻塞函数（sentence-transformers
+    # 为什么用 run_sync？kb_service.warmup 是同步阻塞函数（sentence-transformers
     # 要导入 torch、读权重、算向量），直接调用会把事件循环钉死 10s。
     #
     # 为什么刻意不 await？实测：
@@ -101,28 +105,38 @@ async def lifespan(_: FastAPI):
     #
     # 代价是「端口通了但模型还没好」的窗口（实测 0~2s），这期间提问会同步等模型加载完。
     # 如果哪天要上生产、需要 readiness 探针语义（宁可启动慢也要保证模型就绪），
-    # 把这一行换成 await asyncio.to_thread(kb_service.warmup) 即可。
+    # 把这一行换成 await run_sync(kb_service.warmup) 即可。
     #
     # KB_WARMUP_ON_STARTUP=false 时完全不预热：模型推迟到第一次 AI 请求再加载
     # （search() → get_collection() 兜底，逻辑见 kb_service）。
     # 小内存服务器靠这个把空闲内存从 ~600MB 压到 ~120MB，代价是首个提问慢约 10s。
     warmup_task = (
-        asyncio.create_task(asyncio.to_thread(kb_service.warmup))
+        asyncio.create_task(run_sync(kb_service.warmup))
         if settings.KB_WARMUP_ON_STARTUP
         else None
     )
 
-    yield
-
-    task.cancel()  # 关闭项目同时取消异步任务
-    cleanup_task.cancel()
-    # 注意 to_thread 跑在线程里，cancel 只能取消「等待」这个动作，
-    # 已经进到线程里的模型加载是停不下来的，进程退出时它会自然结束。
-    if warmup_task is not None:
-        warmup_task.cancel()
+    try:
+        yield
+    finally:
+        tasks = [task, cleanup_task]
+        if warmup_task is not None:
+            tasks.append(warmup_task)
+        for pending in tasks:
+            pending.cancel()
+        # Wait for scanner workers to release their database sessions.
+        await asyncio.gather(*tasks, return_exceptions=True)
+        # Warmup may still be running in its thread; finish it before closing
+        # the model queues so shutdown cannot create new unclosed workers.
+        await run_sync(kb_service.close)
+        await response_cache.aclose()
+        await run_sync(response_cache.close)
+        await run_sync(observability.close)
 
 
 app = FastAPI(lifespan=lifespan)
+install_metrics(app, enabled=settings.METRICS_ENABLED,
+                token=settings.METRICS_TOKEN.get_secret_value())
 app.include_router(api)
 # 注册异常处理器
 app.add_exception_handler(BusinessException, bussiness_excpetion_hadler)

@@ -7,11 +7,16 @@
 `/var/www/lab-agent`；服务账号为 `labagent`。`backend/.env` 必须在服务器上配置，
 不要上传开发机的 `.env`，也不要写入 Git。需要 MySQL、Python 虚拟环境及
 `backend/requirements.txt` 中的依赖；重启服务前运行离线回归。
+如需启用 LLM 响应缓存，还需部署 Redis 并在后端 `.env` 配置
+`LLM_CACHE_ENABLED=true` 和 `REDIS_URL`，详见 [Redis 缓存指南](../docs/llm-cache.md)。
 在无法访问 Hugging Face 的机器上，需要把 `BAAI/bge-small-zh-v1.5`
 完整模型文件放到 `/opt/lab-agent/models/bge-small-zh-v1.5`。
 
 服务器若仅有 2 GB 内存，应先确认磁盘空间、数据库所在位置、swap 状态、
 现有服务和端口占用，再安装依赖。首次知识库检索会加载 embedding 模型，
 `KB_WARMUP_ON_STARTUP=false` 只延后加载，并不降低其运行时常驻内存。
+此 2 GB 模板设置 `KB_RERANKER_ENABLED=false`，保留 Embedding 合批并将 batch 限为 8。
+默认的 `BAAI/bge-reranker-v2-m3` 权重约 2.1 GiB，还需要推理内存；应在更大内存的
+机器上开启精排或选择经过验证的小模型，配置见 [批处理说明](../docs/inference-batching.md)。
 
 有域名后应给 Nginx 配置 HTTPS；当前配置仅提供 HTTP 的 IP 访问入口。
