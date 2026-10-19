@@ -10,3 +10,8 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ["backend:8000"]
+  # Empty until an explicitly started exercise registers its temporary target.
+  - job_name: lab-agent-drill
+    file_sd_configs:
+      - files: ["/etc/prometheus/drills/*.json"]
+        refresh_interval: 5s

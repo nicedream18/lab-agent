@@ -98,6 +98,7 @@ services:
       - "127.0.0.1:${PROMETHEUS_PORT:-9091}:9090"
     volumes:
       - ./deploy/stack/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/drills/targets:/etc/prometheus/drills:ro
       - ./deploy/monitoring/rules.yml:/etc/prometheus/rules.yml:ro
       - prometheus-data:/prometheus
     command:

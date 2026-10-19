@@ -328,7 +328,7 @@
         "defaults": {
           "unit": "percent",
           "color": {
-            "mode": "palette-classic"
+            "mode": "thresholds"
           },
           "mappings": [],
           "thresholds": {

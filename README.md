@@ -29,6 +29,7 @@ flowchart LR
 - **指标监控**：通过 `/metrics` 暴露 API 请求数、延迟直方图与在途请求数，Prometheus 采集、Grafana 大盘展示 QPS、P99 和错误率，见 [监控指南](docs/monitoring.md)。
 - **结构化日志**：Loguru 统一输出 JSON，包含请求 ID、接口耗时、失败原因和脱敏异常堆栈，为 ELK 采集准备，见 [日志指南](docs/logging.md)。
 - **日志检索**：可选 Elasticsearch、Logstash 和 Kibana，采集后端 JSON 日志，按请求 ID、等级和接口检索，见 [ELK 指南](docs/elk.md)。
+- **故障定位演练**：独立容器模拟 LLM 上游超时，通过指标、请求 ID 和异常堆栈定位并恢复，见 [演练教程](docs/incident-drill.md)。
 - **LLM 响应缓存**：可选 Redis 精确缓存，按用户和完整模型输入隔离，支持 TTL 与故障回退。启用方式见 [Redis 缓存指南](docs/llm-cache.md)。
 - **知识库**：`backend/data/kb/*.md` 按章节切片、增量同步到本地 Chroma，使用中文 embedding 检索。新增文件需重启后端。
 
