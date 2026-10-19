@@ -36,6 +36,7 @@ jobs:
       - run: python -m pytest --cov=app --cov-report=term-missing --cov-report=json:coverage.json --cov-fail-under=80
       - run: python scripts/check_coverage.py coverage.json
       - run: python -m evals.run
+      - run: python scripts/check_json_logs.py
 
   frontend-build:
     runs-on: ubuntu-latest

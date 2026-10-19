@@ -1,0 +1,18 @@
+server.name: lab-agent-kibana
+server.host: 0.0.0.0
+telemetry.enabled: false
+telemetry.optIn: false
+newsfeed.enabled: false
+xpack.security.session.idleTimeout: 1h
+xpack.security.session.lifespan: 8h
+uiSettings.overrides:
+  defaultRoute: /app/discover
+  defaultColumns:
+    - log.level
+    - route
+    - http.response.status_code
+    - duration_ms
+    - outcome
+    - request_id
+    - message
+  "timepicker:refreshIntervalDefaults": '{"pause":false,"value":10000}'

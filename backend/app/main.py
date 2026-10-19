@@ -5,22 +5,21 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from app.config import UPLOAD_DIR, settings
+from app.common.logging_config import configure_logging, flush_logging, secret_values
+
+configure_logging(level=settings.LOG_LEVEL, service=settings.LOG_SERVICE_NAME,
+                  environment=settings.LOG_ENVIRONMENT, redactions=secret_values(settings),
+                  log_file=settings.LOG_FILE)
+
 import app.models  # 注册全部表，create_all 才能创建预约草稿表
 from app.agent.llm_cache import response_cache
 from app.agent import observability
-from app.config import UPLOAD_DIR, settings
 from app.common.async_io import run_sync
 from app.common.metrics import install_metrics
+from app.common.request_logging import RequestLoggingMiddleware
 from app.database import Base, engine
 from app.services import conversation_service, kb_service, reservation_service
-
-# 必须配一次根 logger，否则 logger.info 会被静默丢弃
-# （root logger 默认级别是 WARNING，只有 error/exception 才打得出来）。
-# 预热耗时这种关键信息就是 info 级别的，不配这里就等于没写。
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +131,7 @@ async def lifespan(_: FastAPI):
         await response_cache.aclose()
         await run_sync(response_cache.close)
         await run_sync(observability.close)
+        await run_sync(flush_logging)
 
 
 app = FastAPI(lifespan=lifespan)
@@ -155,6 +155,7 @@ app.add_middleware(
 )
 # 挂载静态资源：/uploads/xxx.jpg → uploads/xxx.jpg
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+app.add_middleware(RequestLoggingMiddleware, access_enabled=settings.LOG_ACCESS_ENABLED)
 
 
 @app.get("/")

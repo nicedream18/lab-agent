@@ -26,10 +26,27 @@ flowchart LR
 - **跨轮取消确认**：同一天有多条待审核预约时，服务端展示并保存当前用户的候选编号；回复“都取消”、预约号或唯一时段即可继续。批量取消在同一事务中完成，任一条状态变化则整组不取消。
 - **可观测性**：节点轨迹和工具调用结果分别落库；聊天记录留存 30 天，用户可查看和管理长期偏好。前端以 SSE 展示执行过程。
 - **调用链分析**：可选 LangSmith 追踪，关联 LangGraph 节点、模型、工具与 RAG 各阶段，记录缓存命中和重试次数，见 [LangSmith 接入指南](docs/langsmith.md)。
+- **指标监控**：通过 `/metrics` 暴露 API 请求数、延迟直方图与在途请求数，Prometheus 采集、Grafana 大盘展示 QPS、P99 和错误率，见 [监控指南](docs/monitoring.md)。
+- **结构化日志**：Loguru 统一输出 JSON，包含请求 ID、接口耗时、失败原因和脱敏异常堆栈，为 ELK 采集准备，见 [日志指南](docs/logging.md)。
+- **日志检索**：可选 Elasticsearch、Logstash 和 Kibana，采集后端 JSON 日志，按请求 ID、等级和接口检索，见 [ELK 指南](docs/elk.md)。
 - **LLM 响应缓存**：可选 Redis 精确缓存，按用户和完整模型输入隔离，支持 TTL 与故障回退。启用方式见 [Redis 缓存指南](docs/llm-cache.md)。
 - **知识库**：`backend/data/kb/*.md` 按章节切片、增量同步到本地 Chroma，使用中文 embedding 检索。新增文件需重启后端。
 
 技术栈：FastAPI、SQLAlchemy、MySQL、LangGraph、LangChain 工具调用、Chroma、sentence-transformers、Vue 3、Vite、Element Plus。
+
+## Docker Compose 一键启动
+
+安装并启动 Docker 后，在项目根目录执行：
+
+```bash
+./scripts/start-stack.sh
+```
+
+自动构建并启动前端、FastAPI、MySQL、Redis、Prometheus 和 Grafana。前端为 <http://127.0.0.1:8080>，后端文档为 <http://127.0.0.1:8001/docs>，Grafana 为 <http://127.0.0.1:3001/d/lab-agent-api>。首次启动生成根目录 `.env` 保存基础设施密码；已有 `backend/.env` 用于模型服务配置。该栈使用独立数据库，初次使用可在页面注册账号。
+
+配置优先级、数据卷、监控和验证方法见 [Compose 指南](docs/compose.md)。
+
+需要同时启动 ELK 时执行 `./scripts/start-elk.sh`，日志页面为 <http://127.0.0.1:5601/app/discover>；用户名 `elastic`，密码在根目录 `.env` 的 `ELASTIC_PASSWORD`。
 
 ## 本地启动
 
@@ -49,7 +66,7 @@ flowchart LR
 
    ```bash
    cd backend
-   .venv/bin/python -m uvicorn app.main:app --port 8000 --loop asyncio
+   .venv/bin/python -m app.server --host 127.0.0.1 --port 8000
    ```
 
    ```bash
@@ -61,6 +78,8 @@ flowchart LR
 4. 打开 `http://localhost:5173/`，注册并登录后进入 `/manager/ai-chat`。接口文档位于 `http://localhost:8000/docs`。前端开发服务器会把 `/api` 代理到本地后端。
 
 如需演示数据，可在**空的演示数据库**中执行 `backend/sql/seed_demo_data.sql`。该脚本会清空已有的实验室和设备数据，不应对正在使用的数据库运行。已有数据库变更目前需要手写迁移；`create_all()` 不会修改旧表结构。
+
+后端也支持 Docker 构建：`docker build -t lab-agent-backend:local backend`。镜像验证、容器配置与持久化目录见 [Docker 运行指南](docs/docker.md)。
 
 ## 演示路径
 

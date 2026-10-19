@@ -74,6 +74,7 @@ from app.agent.state import (
 )
 from app.agent.tracer import trace_node, write_tool_execution
 from app.common.async_io import run_sync
+from app.common.metrics import mark_failure
 from app.models.reservation import Reservation
 from app.models.user import User
 from app.services import cancellation_draft_service as cancellations
@@ -1205,6 +1206,14 @@ def resolve_history(conversation_id: str, history: list[dict] | None) -> list[di
     return memory.get_history(conversation_id)
 
 
+def _record_workflow_failure(state: dict | None) -> None:
+    state = state or {}
+    answer = state.get("final_response")
+    if (state.get("error") or not isinstance(answer, str) or not answer.strip()
+            or any(item.get("ok") is False for item in state.get("tool_results") or [])):
+        mark_failure(None, "agent_error")
+
+
 class WorkflowRunner:
     """一次问答的执行器。流式和非流式共用同一张图。"""
 
@@ -1264,6 +1273,7 @@ class WorkflowRunner:
         finally:
             await stream.aclose()
 
+        _record_workflow_failure(final_state)
         answer = (final_state or {}).get("final_response") or ""
         memory.append_turn(self.ctx.conversation_id, self.query, answer)
         yield {"type": "done", "answer": answer}
@@ -1277,6 +1287,7 @@ class WorkflowRunner:
             logger.exception("Agent 工作流执行失败")
             raise
 
+        _record_workflow_failure(result)
         answer = (result or {}).get("final_response") or ""
         memory.append_turn(self.ctx.conversation_id, self.query, answer)
         return answer

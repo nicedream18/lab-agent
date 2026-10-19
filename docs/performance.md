@@ -6,6 +6,8 @@
 
 当前系统的 QPS、P95/P99 与历史数据对比见[最新压测报告](load-testing-comparison.md)。
 
+持续观测 API QPS、延迟和错误率使用 [Prometheus 监控](monitoring.md)，包含 `/metrics`、采集配置和查询示例。
+
 重复 LLM 请求可启用 [Redis 响应缓存](llm-cache.md)；比较优化效果时分别记录冷缓存、命中后的耗时及实际模型调用次数。
 
 模型和缓存已使用原生异步调用，同步 ORM/业务工具在线程池执行，详见 [Agent 异步 I/O](async-io.md)。

@@ -18,9 +18,9 @@ cd backend
 .venv/bin/python scripts/load_test.py --local --users 5 --spawn-rate 1 --seconds 30 --think-time 0
 ```
 
-`--local` 自动创建临时 SQLite 数据库、随机密码、20 个实验室和 100 个设备，启动真实 FastAPI 应用和登录/查询接口，测试结束后停止服务并清理临时数据库。不读取真实数据库配置，不调用 LLM。该模式仅支持 `api` 场景，使用单 Uvicorn worker；暂停后台维护任务和知识库预热。结果是本机 API 基线，不能推算 MySQL、生产环境或真实 Agent 容量。
+`--local` 自动创建临时 SQLite 数据库、随机密码、20 个实验室和 100 个设备，启动真实 FastAPI 应用和登录/查询接口，测试结束后停止服务并清理临时数据库。不读取真实数据库配置，不调用 LLM。该模式支持 `api` 和 `rag` 场景，使用单 Uvicorn worker；暂停后台维护任务，`api` 不加载知识库。结果是本机隔离基线，不能推算 MySQL、生产环境或真实 Agent 容量。
 
-已完成的两组本地结果见 [基线报告](load-testing-baseline.md)。
+历史两组本地结果见 [基线报告](load-testing-baseline.md)，最新 API 复测和真实 RAG 批处理对照见 [压测对比报告](load-testing-comparison.md)。
 
 ## 场景与流量
 
@@ -29,10 +29,30 @@ cd backend
 | `api`（默认） | 实验室列表 50%、设备列表 25%、当前用户 25% |
 | `agent` | 开放实验室查询、制度 RAG、按设备找实验室，各约三分之一 |
 | `mixed` | 每次任务约 80% 选择 API、20% 选择 Agent |
+| `rag`（仅 `--local`） | 真实 Embedding、Chroma 检索和 Reranker；三个制度问题各约三分之一 |
 
 比例是随机选择任务的概率，长耗时任务会影响最终请求数比例。每个虚拟用户先登录一次并复用 token；Agent 每次使用新会话，不执行预约、取消或修改资料。Agent 仍会正常生成聊天和审计记录，并消耗模型额度。
 
 这是闭环负载：每个虚拟用户完成一次任务，等待 `--think-time` 秒后再发下一次请求。`--users` 表示虚拟用户数，不是目标 RPS；默认等待 0.5 秒，观察最大查询吞吐时可以设为 0。通过 `--spawn-rate` 控制每秒新增用户数。
+
+## 隔离 RAG 批处理对照
+
+在 `backend/` 执行，两组使用相同的已缓存模型和知识库文档，预热后发压：
+
+```bash
+.venv/bin/python scripts/load_test.py --local --scenario rag --users 8 --spawn-rate 8 --seconds 60 --think-time 0 --embedding-batch-size 1 --reranker-batch-size 1 --output-dir profiles/locust/rag-single-r1
+.venv/bin/python scripts/load_test.py --local --scenario rag --users 8 --spawn-rate 8 --seconds 60 --think-time 0 --output-dir profiles/locust/rag-batched-r1
+```
+
+未传批次参数时使用当前配置，默认 Embedding 32、Reranker 8。此模式强制离线，模型需要事先缓存；临时 Chroma 索引与模型预热不计入负载窗口。测试请求必须返回非空检索结果，且精排模型实际工作、无推理错误；不会将模型缺失后的回退当成成功。`run.json` 保存模型名、文档哈希、切片数和前后批次计数。临时端点只存在于压测入口，不注册到业务后端，也不调用远程 LLM。
+
+两组各重复多轮，换用新输出目录，再汇总：
+
+```bash
+.venv/bin/python scripts/summarize_load_tests.py --before profiles/locust/rag-single-r1 --after profiles/locust/rag-batched-r1 --output profiles/locust/rag-comparison.json
+```
+
+`--before` 和 `--after` 均可接多个目录，汇总每轮 QPS 和同一接口的 P50/P95/P99，以及各轮中位数和范围；脚本会拒绝失败样本或不匹配的场景/并发等配置。RAG 两组还核对模型和文档指纹。历史目录缺少最终 CSV 时，从 HTML 最终统计恢复数据。
 
 ## 对测试服务运行
 
@@ -95,6 +115,8 @@ Agent 的 HTTP 响应时间从发送请求到读完整个 SSE 流；脚本修正
 先预热，再按 1、5、10、20 个虚拟用户逐档运行，保持测试时长、数据、场景和等待时间一致。真实 LLM 与纯 API 分开测量，避免模型延迟掩盖本地服务排队。
 
 Locust 发压期间可对后端 PID 运行 py-spy，使用方法见 [性能分析指南](performance.md)。不建议在开启 cProfile 或 coverage 时采集性能基准。
+
+持续监控业务后端可使用 [Prometheus](monitoring.md)。它的服务端直方图与 Locust 的客户端统计口径不同，比较前确认时间范围和测量边界。
 
 压测逻辑的独立检查：
 

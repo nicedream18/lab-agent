@@ -3,6 +3,7 @@
 import asyncio
 import secrets
 import time
+from contextvars import ContextVar
 
 from fastapi import FastAPI, Request
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, Gauge, Histogram, generate_latest
@@ -13,10 +14,15 @@ FAILURE_KEY = "_lab_agent_api_failure"
 FAILURES = frozenset({"business_error", "agent_error", "exception", "cancelled"})
 METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
 BUCKETS = (.001, .0025, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 20, 30, 60, 120, 180, 300)
+_request_scope: ContextVar[Scope | None] = ContextVar("api_metrics_scope", default=None)
 
 
-def mark_failure(scope: Scope, kind: str) -> None:
-    if kind in FAILURES:
+def mark_failure(scope: Scope | None, kind: str) -> None:
+    # Context propagates through async graph tasks and AnyIO worker threads.
+    # Standalone workflows (CLI/evals) have no request to count.
+    if scope is None:
+        scope = _request_scope.get()
+    if scope is not None and kind in FAILURES:
         scope[FAILURE_KEY] = kind
 
 
@@ -52,6 +58,7 @@ class HTTPMetricsMiddleware:
         status = None
         complete = False
         self.metrics.in_progress.inc()
+        context_token = _request_scope.set(scope)
 
         async def observed_send(message: Message):
             nonlocal status, complete
@@ -70,6 +77,7 @@ class HTTPMetricsMiddleware:
             mark_failure(scope, "exception")
             raise
         finally:
+            _request_scope.reset(context_token)
             method = scope.get("method", "OTHER")
             if method not in METHODS:
                 method = "OTHER"

@@ -20,6 +20,7 @@ os.environ.update({
     "LLM_FORCE_IPV4": "false",
     "LLM_CACHE_ENABLED": "false",
     "KB_WARMUP_ON_STARTUP": "false",
+    "LOG_ACCESS_ENABLED": "false",
     "KB_RERANKER_ENABLED": "true" if os.getenv("LAB_LOADTEST_LOCAL_RAG") == "1" else "false",
 })
 

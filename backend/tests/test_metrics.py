@@ -175,3 +175,67 @@ def test_agent_sse_business_failures_are_visible_despite_http_200(monkeypatch, e
     assert response.status_code == 200
     assert sample(metrics, "lab_agent_http_requests_total", {"method": "POST", "route": "/api/ai/chat/stream",
                                                            "status": "200", "outcome": outcome}) == 1
+
+
+@pytest.mark.parametrize("mode", ["invoke", "stream"])
+@pytest.mark.parametrize("state,outcome", [
+    ({"final_response": "fallback", "error": "model unavailable"}, "agent_error"),
+    ({"final_response": "fallback", "tool_results": [{"ok": False}]}, "agent_error"),
+    ({"final_response": "  "}, "agent_error"),
+    ({"final_response": "answer", "tool_results": [{"ok": True}]}, "success"),
+])
+def test_workflow_final_state_counts_degraded_answers_in_both_modes(monkeypatch, mode, state, outcome):
+    from app.agent import graph
+
+    class FakeGraph:
+        async def ainvoke(self, *args, **kwargs):
+            return state
+
+        async def astream(self, *args, **kwargs):
+            yield "values", state
+
+    runner = graph.WorkflowRunner.__new__(graph.WorkflowRunner)
+    runner.ctx = SimpleNamespace(conversation_id="private-conversation")
+    runner.query, runner.state, runner.graph = "private query", {}, FakeGraph()
+    saved = []
+    monkeypatch.setattr(graph.memory, "append_turn", lambda *args: saved.append(args))
+    app = FastAPI()
+    metrics = monitoring.install_metrics(app)
+
+    @app.get("/api/workflow")
+    async def workflow():
+        if mode == "invoke":
+            return {"answer": await runner.ainvoke()}
+        return {"events": [event async for event in runner.astream()]}
+
+    response = TestClient(app).get("/api/workflow")
+    assert response.status_code == 200
+    assert saved == [(runner.ctx.conversation_id, runner.query, state["final_response"])]
+    assert sample(metrics, "lab_agent_http_requests_total", {"method": "GET", "route": "/api/workflow",
+                                                           "status": "200", "outcome": outcome}) == 1
+
+
+@pytest.mark.anyio
+async def test_failure_context_isolated_between_concurrent_requests_and_worker_threads():
+    metrics = monitoring.APIMetrics()
+    barrier = asyncio.Barrier(2)
+
+    async def app(scope, receive, send):
+        scope["route"] = SimpleNamespace(path=scope["path"])
+        if scope["path"] == "/api/failed":
+            await asyncio.to_thread(monitoring.mark_failure, None, "agent_error")
+        await barrier.wait()
+        await send({"type": "http.response.start", "status": 200})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    async def send(message):
+        pass
+
+    middleware = monitoring.HTTPMetricsMiddleware(app, metrics)
+    monitoring.mark_failure(None, "agent_error")  # Outside HTTP: no-op.
+    await asyncio.gather(*(middleware({"type": "http", "method": "GET", "path": path}, None, send)
+                           for path in ("/api/failed", "/api/success")))
+    assert monitoring._request_scope.get() is None
+    for route, outcome in (("/api/failed", "agent_error"), ("/api/success", "success")):
+        assert sample(metrics, "lab_agent_http_requests_total", {"method": "GET", "route": route,
+                                                               "status": "200", "outcome": outcome}) == 1

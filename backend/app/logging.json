@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "disable_existing_loggers": false,
+  "handlers": {
+    "json": {"()": "app.common.logging_config.InterceptHandler"}
+  },
+  "root": {"handlers": ["json"], "level": "INFO"},
+  "loggers": {
+    "uvicorn": {"handlers": ["json"], "level": "INFO", "propagate": false},
+    "uvicorn.error": {"handlers": ["json"], "level": "INFO", "propagate": false},
+    "uvicorn.access": {"handlers": [], "level": "INFO", "propagate": false}
+  }
+}

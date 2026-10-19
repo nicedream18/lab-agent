@@ -1,16 +1,20 @@
 """Verify real Prometheus scrapes/PromQL using a disposable API backend and container."""
 
+import argparse
+import base64
 from contextlib import ExitStack
 import json
+import math
 import os
 from pathlib import Path
+import re
 import secrets
 import socket
 import subprocess
 import sys
 import tempfile
 import time
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -24,10 +28,12 @@ def free_port():
         return probe.getsockname()[1]
 
 
-def fetch(url, payload=None, token=None):
+def fetch(url, payload=None, token=None, basic=None):
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    elif basic:
+        headers["Authorization"] = "Basic " + base64.b64encode(":".join(basic).encode()).decode()
     request = Request(url, data=json.dumps(payload).encode() if payload is not None else None,
                       headers=headers)
     try:
@@ -38,7 +44,74 @@ def fetch(url, payload=None, token=None):
         return response.status, json.load(response)
 
 
+def verify_grafana(stack, root, name, network, instance):
+    port = free_port()
+    host = f"http://127.0.0.1:{port}"
+    password = secrets.token_urlsafe(24)
+    container = name + "-grafana"
+    grafana = root / "deploy/monitoring/grafana"
+    subprocess.run(["docker", "run", "--detach", "--rm", "--name", container,
+                    "--network", network, "--publish", f"127.0.0.1:{port}:3000",
+                    "--env", "GF_SECURITY_ADMIN_PASSWORD", "--env", "GF_ANALYTICS_REPORTING_ENABLED=false",
+                    "--mount", f"type=bind,source={grafana / 'provisioning'},target=/etc/grafana/provisioning,readonly",
+                    "--mount", f"type=bind,source={grafana / 'dashboards'},target=/var/lib/grafana/dashboards,readonly",
+                    "grafana/grafana:13.2.4"],
+                   env={**os.environ, "GF_SECURITY_ADMIN_PASSWORD": password},
+                   check=True, stdout=subprocess.DEVNULL)
+    stack.callback(lambda: subprocess.run(["docker", "rm", "--force", "--volumes", container],
+                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+    deadline = time.monotonic() + 60
+    while True:
+        try:
+            status, health = fetch(host + "/api/health")
+            if status == 200 and health.get("database") == "ok":
+                break
+        except (URLError, OSError):
+            pass
+        if time.monotonic() > deadline:
+            raise RuntimeError("Temporary Grafana did not become healthy")
+        time.sleep(.2)
+    auth = ("admin", password)
+    status, health = fetch(host + "/api/datasources/uid/lab-agent-prometheus/health", basic=auth)
+    if status != 200 or health.get("status") != "OK":
+        raise RuntimeError(f"Grafana data source unhealthy: {health}")
+    status, provisioned = fetch(host + "/api/dashboards/uid/lab-agent-api", basic=auth)
+    if status != 200 or not provisioned.get("meta", {}).get("provisioned"):
+        raise RuntimeError("Grafana dashboard was not provisioned")
+    dashboard = provisioned["dashboard"]
+    expected = json.loads((grafana / "dashboards/lab-agent-api.json").read_text())
+    if len(dashboard["panels"]) != len(expected["panels"]):
+        raise RuntimeError("Grafana dashboard panels are incomplete")
+    results = {}
+    for panel in dashboard["panels"]:
+        for target in panel.get("targets", []):
+            # PromQL regexes live inside string literals: escape both layers.
+            escaped_instance = json.dumps(re.escape(instance))[1:-1]
+            expr = (target["expr"].replace("${instance}", escaped_instance)
+                    .replace("${route}", "/api/.*|__unmatched_api__")
+                    .replace("$__rate_interval", "5m"))
+            now = int(time.time() * 1000)
+            payload = {"from": str(now - 300_000), "to": str(now), "queries": [{
+                **target, "expr": expr, "instant": True, "range": False,
+                "intervalMs": 5000, "maxDataPoints": 1000,
+            }]}
+            status, body = fetch(host + "/api/ds/query", payload=payload, basic=auth)
+            result = body.get("results", {}).get(target["refId"], {})
+            values = [value for frame in result.get("frames", [])
+                      for field, column in zip(frame["schema"]["fields"], frame["data"]["values"])
+                      if field["type"] == "number" for value in column
+                      if isinstance(value, (int, float)) and math.isfinite(value)]
+            if status != 200 or result.get("error") or not values:
+                raise RuntimeError(f"Grafana panel query failed: {panel['title']}: {body}")
+            results[f"{panel['title']} / {target['refId']}"] = values
+    return {"datasource_health": health["status"], "dashboard_uid": dashboard["uid"],
+            "panel_count": len(dashboard["panels"]), "verified_queries": results}
+
+
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--grafana", action="store_true", help="Also verify the provisioned Grafana dashboard against real metrics")
+    args = parser.parse_args()
     root = BACKEND.parent
     port, prom_port = free_port(), free_port()
     host = f"http://127.0.0.1:{port}"
@@ -64,7 +137,14 @@ def main():
                       "static_configs": [{"targets": [f"host.docker.internal:{port}"]}]}]}
         path = directory / "prometheus.yml"
         path.write_text(json.dumps(config))  # JSON is also valid YAML.
-        subprocess.run(["docker", "run", "--detach", "--rm", "--name", name,
+        network_args = []
+        network = name + "-network"
+        if args.grafana:
+            subprocess.run(["docker", "network", "create", network], check=True, stdout=subprocess.DEVNULL)
+            stack.callback(lambda: subprocess.run(["docker", "network", "rm", network],
+                                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+            network_args = ["--network", network, "--network-alias", "prometheus"]
+        subprocess.run(["docker", "run", "--detach", "--rm", "--name", name, *network_args,
                         "--publish", f"127.0.0.1:{prom_port}:9090",
                         "--add-host", "host.docker.internal:host-gateway",
                         "--mount", f"type=bind,source={path},target=/etc/prometheus/prometheus.yml,readonly",
@@ -109,7 +189,10 @@ def main():
         while True:
             results = {name: query(expr) for name, (expr, _) in checks.items()}
             if all(values and checks[name][1](values[0]) for name, values in results.items()):
-                print(json.dumps({"scrape_up": 1, "verified": results}, indent=2))
+                report = {"scrape_up": 1, "verified": results}
+                if args.grafana:
+                    report["grafana"] = verify_grafana(stack, root, name, network, f"host.docker.internal:{port}")
+                print(json.dumps(report, ensure_ascii=False, indent=2))
                 return 0
             if time.monotonic() > deadline:
                 raise RuntimeError(f"Unexpected metrics: {results}")

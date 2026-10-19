@@ -20,3 +20,4 @@ langchain-core==1.6.3
 langsmith==0.14.1
 redis==8.1.0
 prometheus-client==0.26.0
+loguru==0.7.3

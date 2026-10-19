@@ -1,0 +1,276 @@
+name: lab-agent
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  mysql:
+    image: mysql:8.4.11
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-lab_agent}
+      MYSQL_USER: ${MYSQL_USER:-lab_agent}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Run ./scripts/start-stack.sh to initialize .env}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Run ./scripts/start-stack.sh to initialize .env}
+      TZ: Asia/Shanghai
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysql --protocol=TCP -h 127.0.0.1 -u \"$$MYSQL_USER\" \"$$MYSQL_DATABASE\" --execute='SELECT 1' --silent >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      start_period: 60s
+      retries: 30
+    restart: unless-stopped
+    logging: *logging
+
+  redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    logging: *logging
+
+  backend:
+    image: lab-agent-backend:local
+    build:
+      context: ./backend
+    env_file:
+      - path: ./deploy/stack/backend.defaults.env
+      - path: ./backend/.env
+        required: false
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-lab_agent}:${MYSQL_PASSWORD:?Initialize .env}@mysql:3306/${MYSQL_DATABASE:-lab_agent}?charset=utf8mb4
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Run ./scripts/start-stack.sh to initialize .env}
+      REDIS_URL: redis://redis:6379/0
+      LLM_CACHE_ENABLED: ${LLM_CACHE_ENABLED:-true}
+      KB_WARMUP_ON_STARTUP: ${KB_WARMUP_ON_STARTUP:-false}
+      KB_INFERENCE_DEVICE: cpu
+      METRICS_ENABLED: "true"
+      # This stack exposes metrics only on the internal network and localhost.
+      METRICS_TOKEN: ""
+      LOG_FILE: /app/logs/backend.jsonl
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8001}:8000"
+    volumes:
+      - uploads:/app/uploads
+      - chroma-data:/app/data/chroma
+      - huggingface-cache:/home/app/.cache/huggingface
+      - app-logs:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    stop_grace_period: 45s
+    restart: unless-stopped
+    logging: *logging
+
+  frontend:
+    image: lab-agent-frontend:local
+    build:
+      context: ./frontend
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    logging: *logging
+
+  prometheus:
+    image: prom/prometheus:v3.13.4
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9091}:9090"
+    volumes:
+      - ./deploy/stack/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/monitoring/rules.yml:/etc/prometheus/rules.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+      - --storage.tsdb.retention.size=512MB
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    logging: *logging
+
+  grafana:
+    image: grafana/grafana:13.2.4
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Run ./scripts/start-stack.sh to initialize .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_SERVER_ROOT_URL: http://127.0.0.1:${GRAFANA_PORT:-3001}/
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/lab-agent-api.json
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3001}:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./deploy/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 10
+    restart: unless-stopped
+    logging: *logging
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-9.5.5}
+    profiles: [elk]
+    environment:
+      discovery.type: single-node
+      cluster.name: lab-agent-logs
+      xpack.security.enabled: "true"
+      xpack.security.enrollment.enabled: "false"
+      # Local development only: authenticated HTTP on the private network/loopback.
+      xpack.security.http.ssl.enabled: "false"
+      xpack.security.transport.ssl.enabled: "false"
+      xpack.license.self_generated.type: basic
+      xpack.ml.enabled: "false"
+      ingest.geoip.downloader.enabled: "false"
+      node.store.allow_mmap: "false"
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-}
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    mem_limit: 1536m
+    ports:
+      - "127.0.0.1:${ELASTICSEARCH_PORT:-9200}:9200"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -u \"elastic:$$ELASTIC_PASSWORD\" 'http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow&timeout=5s' >/dev/null"]
+      interval: 10s
+      timeout: 8s
+      start_period: 40s
+      retries: 30
+    restart: unless-stopped
+    logging: *logging
+
+  elk-setup:
+    image: lab-agent-backend:local
+    pull_policy: never
+    profiles: [elk]
+    entrypoint: ["python", "/setup/initialize.py", "elasticsearch"]
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-}
+      KIBANA_SYSTEM_PASSWORD: ${KIBANA_SYSTEM_PASSWORD:-}
+      LOGSTASH_WRITER_PASSWORD: ${LOGSTASH_WRITER_PASSWORD:-}
+    volumes:
+      - ./deploy/elk:/setup:ro
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    restart: "no"
+    logging: *logging
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:${ELASTIC_VERSION:-9.5.5}
+    profiles: [elk]
+    environment:
+      LOGSTASH_WRITER_PASSWORD: ${LOGSTASH_WRITER_PASSWORD:-}
+      LS_JAVA_OPTS: -Xms256m -Xmx256m -XX:MaxDirectMemorySize=128m
+    mem_limit: 1024m
+    volumes:
+      - ./deploy/elk/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - ./deploy/elk/pipeline:/usr/share/logstash/pipeline:ro
+      - app-logs:/var/log/lab-agent:ro
+      - logstash-data:/usr/share/logstash/data
+    depends_on:
+      elk-setup:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9600/_node/pipelines/main | grep -q '\"main\"'"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 20
+    stop_grace_period: 60s
+    restart: unless-stopped
+    logging: *logging
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:${ELASTIC_VERSION:-9.5.5}
+    profiles: [elk]
+    environment:
+      ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
+      ELASTICSEARCH_USERNAME: kibana_system
+      ELASTICSEARCH_PASSWORD: ${KIBANA_SYSTEM_PASSWORD:-}
+      XPACK_SECURITY_ENCRYPTIONKEY: ${KIBANA_SECURITY_ENCRYPTION_KEY:-}
+      XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY: ${KIBANA_SAVED_OBJECTS_ENCRYPTION_KEY:-}
+      XPACK_REPORTING_ENCRYPTIONKEY: ${KIBANA_REPORTING_ENCRYPTION_KEY:-}
+      NODE_OPTIONS: --max-old-space-size=768
+    mem_limit: 1536m
+    ports:
+      - "127.0.0.1:${KIBANA_PORT:-5601}:5601"
+    volumes:
+      - ./deploy/elk/kibana.yml:/usr/share/kibana/config/kibana.yml:ro
+      - kibana-data:/usr/share/kibana/data
+    depends_on:
+      elk-setup:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:5601/api/status >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 30
+    restart: unless-stopped
+    logging: *logging
+
+  elk-views:
+    image: lab-agent-backend:local
+    pull_policy: never
+    # Run explicitly after --wait; a successful one-shot leaf would otherwise
+    # be treated as an exited service by Compose's health wait.
+    profiles: [elk-init]
+    entrypoint: ["python", "/setup/initialize.py", "kibana"]
+    environment:
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-}
+    volumes:
+      - ./deploy/elk:/setup:ro
+    restart: "no"
+    logging: *logging
+
+volumes:
+  mysql-data:
+  redis-data:
+  uploads:
+  chroma-data:
+  huggingface-cache:
+  prometheus-data:
+  grafana-data:
+  app-logs:
+  elasticsearch-data:
+  logstash-data:
+  kibana-data:

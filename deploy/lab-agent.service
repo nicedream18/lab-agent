@@ -17,7 +17,7 @@ Environment=KB_EMBEDDING_BATCH_SIZE=8
 Environment=TZ=Asia/Shanghai
 Environment=LAB_EMBEDDING_MODEL=/opt/lab-agent/models/bge-small-zh-v1.5
 Environment=HF_HUB_OFFLINE=1
-ExecStart=/opt/lab-agent/backend/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --loop asyncio
+ExecStart=/opt/lab-agent/backend/.venv/bin/python -m app.server --host 127.0.0.1 --port 8000 --workers 1 --loop asyncio
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=120

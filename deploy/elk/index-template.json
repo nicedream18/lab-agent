@@ -1,0 +1,27 @@
+{
+  "index_patterns": ["lab-agent-logs-*"],
+  "priority": 200,
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "index.lifecycle.name": "lab-agent-logs-retention",
+      "index.refresh_interval": "2s"
+    },
+    "mappings": {
+      "properties": {
+        "@timestamp": {"type": "date"},
+        "message": {"type": "match_only_text"},
+        "request_id": {"type": "keyword", "ignore_above": 128},
+        "route": {"type": "keyword"},
+        "outcome": {"type": "keyword"},
+        "log": {"properties": {"level": {"type": "keyword"}, "logger": {"type": "keyword"}}},
+        "service": {"properties": {"name": {"type": "keyword"}, "environment": {"type": "keyword"}}},
+        "event": {"properties": {"action": {"type": "keyword"}, "outcome": {"type": "keyword"}, "dataset": {"type": "keyword"}, "duration": {"type": "long"}}},
+        "http": {"properties": {"request": {"properties": {"method": {"type": "keyword"}}}, "response": {"properties": {"status_code": {"type": "integer"}}}}},
+        "error": {"properties": {"type": {"type": "keyword"}, "message": {"type": "match_only_text"}, "stack_trace": {"type": "match_only_text"}}}
+      }
+    }
+  },
+  "_meta": {"description": "Lab Agent JSON logs; one shard, seven-day retention"}
+}

@@ -1,0 +1,14 @@
+apiVersion: 1
+
+providers:
+  - name: lab-agent
+    orgId: 1
+    folder: Lab Agent
+    folderUid: lab-agent
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    # Force polling: Docker bind mounts may not forward filesystem watch events.
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

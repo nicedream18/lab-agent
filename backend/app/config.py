@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -70,6 +71,12 @@ class Settings(BaseSettings):
 
     METRICS_ENABLED: bool = True
     METRICS_TOKEN: SecretStr = SecretStr("")
+
+    LOG_LEVEL: Literal["TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    LOG_SERVICE_NAME: str = Field(default="lab-agent-backend", min_length=1, max_length=128)
+    LOG_ENVIRONMENT: str = Field(default="development", min_length=1, max_length=64)
+    LOG_ACCESS_ENABLED: bool = True
+    LOG_FILE: str = ""
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env", env_file_encoding="utf-8"

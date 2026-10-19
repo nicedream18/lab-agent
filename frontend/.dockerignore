@@ -1,0 +1,14 @@
+**
+!Dockerfile
+!.dockerignore
+!nginx.conf
+!package.json
+!package-lock.json
+!index.html
+!vite.config.js
+!public/
+!public/**
+!src/
+!src/**
+**/.env
+**/.env.*

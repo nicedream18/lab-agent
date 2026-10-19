@@ -6,6 +6,7 @@ from starlette.exceptions import HTTPException
 
 from app.common.response import Response
 from app.common.metrics import mark_failure
+from app.common.request_logging import REQUEST_ID_KEY
 
 
 class BusinessException(Exception):
@@ -52,10 +53,11 @@ async def validation_excpetion_hadler(_: Request, exc: Exception):
     )
 
 
-async def global_excpetion_hadler(_: Request, exc: Exception):
+async def global_excpetion_hadler(request: Request, exc: Exception):
     """全局异常处理器"""
     del exc  # 参数由 FastAPI 传入；这里只用固定文案，不需要异常对象
     return JSONResponse(
         status_code=500,
         content=Response.error(code=500, message="服务器内部错误").model_dump(),
+        headers={"X-Request-ID": request.scope[REQUEST_ID_KEY]} if request.scope.get(REQUEST_ID_KEY) else None,
     )

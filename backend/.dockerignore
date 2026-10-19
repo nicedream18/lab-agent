@@ -1,0 +1,17 @@
+# Allow only runtime source, dependencies and knowledge-base documents.
+# In particular, never upload .env or local databases to the builder.
+**
+!Dockerfile
+!.dockerignore
+!requirements.txt
+!app/
+!app/**
+!data/
+!data/kb/
+!data/kb/**
+**/__pycache__/
+**/*.py[cod]
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
